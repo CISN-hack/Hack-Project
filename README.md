@@ -18,8 +18,11 @@ JASON : COMBINE THE LIMITED TIME PROMO OF VARIOUS STALL/BRAND
   * how AI collect the latest info for all the limited time promo
 
 
-Ming :
-
+Ming : FEATURES OF SMART SHOPPING SYSTEM
+- Features :
+  * Reminder of the date and places to get offered items
+  * AI find for ingredients (cooking) with lowered best price
+  * If product is out of stock, system will try to look for similar items with more valuable price
 
 
 Isaac : 
