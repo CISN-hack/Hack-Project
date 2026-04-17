@@ -25,8 +25,13 @@ Ming : FEATURES OF SMART SHOPPING SYSTEM
   * If product is out of stock, system will try to look for similar items with more valuable price
 
 
-Isaac : 
-
+Isaac : **SME micro-financing application agent**
+- It turns a messy pile of business papers into a successful loan application in minutes.
+- It acts as an automated "Loan Manager" for small businesses.
+- It turns messy business documents into professional loan applications.
+- It finds the best government and bank funds for the user.
+- It prepares and submits everything to the bank automatically.
+- It makes "unbankable" SMEs look like high-quality borrowers.
 
 
 ZhenXun :
