@@ -2,27 +2,25 @@
 - Warehouse : E-commerce warehouse  (Supplier goods delivered -> workers handle -> based on customer's Purchase Order(PO) )
 
 ## Main Idea
-- Step 1 (Unstructured Input): A warehouse worker types in a chat: "A new pallet of 500 iPhones,50 heavy mini-fridges and 7 light bars just arrived. Where do I put them? Here is a picture of Aisle 4."
+- **Step 1 (Unstructured Input)**: A warehouse worker types in a chat: "A new pallet of 500 iPhones,50 heavy mini-fridges and 7 light bars just arrived. Where do I put them? Here is a picture of Aisle 4."
 
-- Step 2 (API Interactions & Multi-Step Reasoning): The GLM doesn't just guess. It actively triggers tools:  
-Tool 1: Queries the Purchase Database API -> "7 light bars occurs in recent Purchase Order"
-  
-Tool 2: Queries the Sales Database API -> "iPhones sell fast, fridges sell slow."  
-  
-Tool 3: Queries the Product API -> "iPhones are 100g, fridges are 40kg."  (LLM need to do the calculation by himself)c
+- **Step 2 (API Interactions & Multi-Step Reasoning)**: The GLM doesn't just guess. It actively triggers tools:  
+  * **Tool 1**: Queries the **Purchase Database API** -> *"7 light bars occurs in recent Purchase Order"*
+  * **Tool 2**: Queries the **Sales Database API** -> *"iPhones sell fast, fridges sell slow."*
+  * **Tool 3**: Queries the **Product API** -> *"iPhones are 100g, fridges are 40kg."* (LLM need to do the calculation by himself)
 
-- Step 3 (Edge Case Handling): ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
+- **Step 3 (Edge Case Handling)**: ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
     
-- Step 4 (Dynamic Task Orchestration): Instead of failing, the GLM dynamically alters the workflow. It replies to the worker:"Fridges to Zone C, Aisle 9, Shelves 1-3. iPhones to Zone F, Aisle 6, Shelves 3, light bars put near packing area.I have updated the database to reserve this space."  
+- **Step 4 (Dynamic Task Orchestration)**: Instead of failing, the GLM dynamically alters the workflow. It replies to the worker:"Fridges to Zone C, Aisle 9, Shelves 1-3. iPhones to Zone F, Aisle 6, Shelves 3, **light bars put near packing area**.I have updated the database to reserve this space."  
 
 ## How stock is locate (Digital Twin Table)
-- Note: Warehouse contains multiple Zones (e.g., Cold Storage, Heavy Goods, Fast-Moving).  
-Zones contain multiple Aisles.  
-Aisles contain multiple Shelves (or Racks).  
-Shelves contain individual Bins (or Slots).
+- **Note**: Warehouse contains multiple Zones (e.g., Cold Storage, Heavy Goods, Fast-Moving).  
+**Zones** contain multiple **Aisles**.  
+Aisles contain multiple **Shelves** (or Racks).  
+Shelves contain individual **Bins** (or Slots).
   
-- binAdd :  
-bin_id: (e.g., "ZH-A4-S2-B12" for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
+- **binAdd** :  
+bin_id: (e.g., **"ZH-A4-S2-B12"** for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
 status: (e.g., "Empty", "Partially Full", "Full")  
 max_weight_capacity: 100kg  
 current_weight: 40kg  
@@ -30,9 +28,9 @@ max_volume: 2 cubic meters
 current_items: [List of product IDs currently stored here]
 
 ## Test Case Scenario
-- The Overweight Pallet: The user asks to put 500kg of goods in an aisle, but the database says the shelf can only hold 200kg, forcing the AI to find a new location.
+- **The Overweight Pallet**: The user asks to put 500kg of goods in an aisle, but the database says the shelf can only hold 200kg, forcing the AI to find a new location.
 
-- The "Missing Item" Ambiguity: The user asks where to put "the new shipment," but forgets to say what the shipment is, forcing the AI to ask a clarifying follow-up question.
+- **The "Missing Item" Ambiguity**: The user asks where to put "the new shipment," but forgets to say what the shipment is, forcing the AI to ask a clarifying follow-up question.
 
 ## Usefull Notes
 ### The Core Difference: "System of Record" vs. "System of Intelligence"
