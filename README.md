@@ -1,37 +1,64 @@
-# Hack-Project
-Usually all our work will use this repo
+# Warehouse Restock Manager
+- Warehouse : E-commerce warehouse  (Supplier goods delivered -> workers handle -> based on customer's Purchase Order(PO) )
 
-## Brief Idea (Write under your section)
-* just write no need arrangement
-  
-JASON : COMBINE THE LIMITED TIME PROMO OF VARIOUS STALL/BRAND
-- Help shoppers to make decision when shopping
-- Help shoppers to find the most worth items specified for them
-- Make decision based on : Limited time promo of different stall , user‘s identity(student...) , user's preference , location ,
-- AI : compare the most suitable promo for specific users ,
+## Main Idea
+- Step 1 (Unstructured Input): A warehouse worker types in a chat: "A new pallet of 500 iPhones,50 heavy mini-fridges and 7 light bars just arrived. Where do I put them? Here is a picture of Aisle 4."
 
-- Function ：
-  * find out the most suitable promo
-  * when user use this app at home show the ETA to the stall
+- v
 
-- Problem for now :
-  * how AI collect the latest info for all the limited time promo
+- Step 3 (Edge Case Handling): ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
+- Step 4 (Dynamic Task Orchestration): Instead of failing, the GLM dynamically alters the workflow. It replies to the worker:"Fridges to Zone C, Aisle 9, Shelves 1-3. iPhones to Zone F, Aisle 6, Shelves 3, light bars put near packing area.I have updated the database to reserve this space."  
+
+## How stock is locate (Digital Twin Table)
+- Note: Warehouse contains multiple Zones (e.g., Cold Storage, Heavy Goods, Fast-Moving).  
+Zones contain multiple Aisles.  
+Aisles contain multiple Shelves (or Racks).  
+Shelves contain individual Bins (or Slots).
+- binAdd :  
+bin_id: (e.g., "ZH-A4-S2-B12" for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
+status: (e.g., "Empty", "Partially Full", "Full")  
+max_weight_capacity: 100kg  
+current_weight: 40kg  
+max_volume: 2 cubic meters  
+current_items: [List of product IDs currently stored here]
+
+## Usefull Notes
+### The Core Difference: "System of Record" vs. "System of Intelligence"
+Standard warehouses use a Warehouse Management System (WMS). A WMS is essentially a giant database. It is a System of Record.
+
+What a WMS does: A worker puts a box on Shelf 4, scans a barcode, and the WMS records: "Box A is on Shelf 4." It is purely reactive. It tracks what happened.
+
+Your AI Agent is a System of Intelligence.
+
+What your AI does: It doesn't just record where things are; it strategizes where things should go before the worker even moves the box.
+
+The Point of Your Project (Your Hackathon USP)
+Standard systems lack dynamic, cross-departmental reasoning. Your AI bridges the gap between sales forecasting and physical warehouse labor.
+
+Here is why your project is valuable:
+
+1. Dynamic Slotting (The "Sales Velocity" Angle)
+Traditional WMS systems are often static. If a shelf is assigned to "Electronics," all electronics go there.
+Your AI agent looks at external data. If it sees that a specific brand of headphones is going viral on TikTok and sales are spiking, it intervenes. When the next shipment arrives, the AI tells the worker: "Skip the normal electronics aisle. Put these right next to the packing station (Aisle 1) because we are going to ship 500 of them tomorrow." This saves workers miles of walking and speeds up delivery.
+
+2. Handling Real-Time Exceptions
+A standard tracking system breaks when reality doesn't match the database. If a forklift breaks down and blocks Aisle 2, a standard WMS still tells workers to put things in Aisle 2, causing a traffic jam.
+Your AI Agent can be informed: "Aisle 2 is blocked." It immediately recalculates and orchestrates a new workflow, dynamically rerouting workers to alternative shelves that fit the weight and size constraints of their pallets.
+
+3. The "Conversational Interface" for Workers
+Enterprise software is notoriously clunky. New warehouse workers spend weeks learning how to use complex RF scanners and legacy database terminals.
+With your agent, the interface is natural language. A temporary worker just types (or speaks): "I have a pallet of dog food, but the assigned shelf is broken." The AI instantly cross-references the database, finds a safe alternative, and replies: "Understood. Reroute to Zone B, Shelf 9. I will update the inventory records for you."
+
+How to Frame This for the Judges
+When your team of four presents this, lean into this narrative:
+
+"Warehouses already know where their stock is. That is a solved problem. Our AI Agent solves the unsolved problem: knowing where stock should be right now to maximize packing efficiency, based on real-time sales data and physical constraints."
+
+Does this help clarify the business value of your agent? We can start designing the mock API calls to simulate this "sales data to shelf location" logic if you are ready.
 
 
-Ming : FEATURES OF SMART SHOPPING SYSTEM
-- Features :
-  * Reminder of the date and places to get offered items
-  * AI find for ingredients (cooking) with lowered best price
-  * If product is out of stock, system will try to look for similar items with more valuable price
 
 
-Isaac : **SME micro-financing application agent**
-- It turns a messy pile of business papers into a successful loan application in minutes.
-- It acts as an automated "Loan Manager" for small businesses.
-- It turns messy business documents into professional loan applications.
-- It finds the best government and bank funds for the user.
-- It prepares and submits everything to the bank automatically.
-- It makes "unbankable" SMEs look like high-quality borrowers.
 
 
-ZhenXun :
+
