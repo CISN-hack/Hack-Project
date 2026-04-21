@@ -10,13 +10,15 @@ import java.nio.file.Paths;
 public class AIAgent {
 
     // --- ZHIPU AI CONFIGURATION ---
-    
-    private static final String API_KEY = "YOUR_ZHIPU_API_KEY_HERE"; 
+    // nvidia api key :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
+    //zhipu url : https://open.bigmodel.cn/api/paas/v4/chat/completions
+    private static final String API_KEY = "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"; 
     private static final String MODEL_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
     private static final String SYSTEM_INSTRUCTION = 
         "You are Zai, a Warehouse System of Intelligence. " +
-        "PROTOCOL ALPHA: If a worker mentions a delivery or incoming stock, you MUST first call 'readLocalPurchaseOrder' for 'PO_April20.csv'. " +
+        "If the worker just says a general greeting (like 'hi' or 'hello'), simply greet them back and ask what stock has arrived. DO NOT use any tools. " +
+        "PROTOCOL ALPHA: ONLY if a worker explicitly mentions a delivery or incoming stock, you MUST first call 'readLocalPurchaseOrder' for 'PO_April20.csv'. " +
         "After checking the PO, use 'getProductAnalysis' to check weight and sales velocity. " +
         "Finally, use 'findOptimalBin' to suggest a storage location. Be concise and professional.";
 
@@ -52,6 +54,7 @@ public class AIAgent {
         String safePrompt = prompt.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
 
         // Zhipu uses standard 'messages' and 'model' parameters
+        //Zhipu payload: 
         String payload = """
             {
               "model": "glm-4",
@@ -61,7 +64,19 @@ public class AIAgent {
               ],
               "tools": %s
             }
-            """.formatted(SYSTEM_INSTRUCTION, safePrompt, getToolsDefinition());
+            """.formatted(SYSTEM_INSTRUCTION, safePrompt, getToolsDefinition()); 
+
+            // Nvidia payload (similar to Zhipu but with some differences in structure)
+        /*String payload = """
+            {
+              "model": "meta/llama-3.3-70b-instruct", 
+              "messages": [
+                { "role": "system", "content": "%s" },
+                { "role": "user", "content": "%s" }
+              ],
+              "tools": %s
+            }
+            """.formatted(SYSTEM_INSTRUCTION, safePrompt, getToolsDefinition());*/
 
         HttpClient client = HttpClient.newHttpClient();
         HttpRequest request = HttpRequest.newBuilder()
@@ -116,17 +131,26 @@ public class AIAgent {
                             args.get("volume").getAsDouble(),
                             args.get("velocity").getAsInt()
                         );
+                    } else if (funcName.equals("searchProductByDescription")) {
+                        toolOutput = WarehouseSkills.searchProductByDescription(args.get("keyword").getAsString());
                     }
+
                     
                     System.out.println("[DATA RETRIEVED]\n" + toolOutput);
                     System.out.println("[Zai is analyzing the new data...]");
                     
                     // Autonomous Loop Fix for Zhipu
+                   // Autonomous Loop Fix for NVIDIA/Zhipu
                     String followUpPrompt = "System Data Injection: The tool '" + funcName + "' just returned this data:\n" + toolOutput + 
                                             "\nBased on this, what is the next step? Tell the worker exactly what to do.";
                     
-                    String nextResponse = callZhipu(followUpPrompt);
-                    processAIResponse(nextResponse); 
+                    // THE FIX: Tell Java to wait 2 seconds so NVIDIA doesn't block us!
+                    System.out.println("[Zai is processing data... (bypassing rate limits)]");
+                    try { Thread.sleep(2500); } catch (InterruptedException e) {} 
+                    
+                    // Now call the AI again
+                    String nextResponse = callZhipu(followUpPrompt); 
+                    processAIResponse(nextResponse);
                 }
             } else if (message.has("content")) {
                 // Regular text reply

@@ -42,5 +42,19 @@
         "required": ["weight", "volume", "velocity"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "searchProductByDescription",
+      "description": "Use this FIRST if the worker gives a product name (like 'ceiling fan' or 'bulb') instead of a product ID. It returns the exact Product ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "keyword": { "type": "string", "description": "A single keyword from the product description." }
+        },
+        "required": ["keyword"]
+      }
+    }
   }
 ]

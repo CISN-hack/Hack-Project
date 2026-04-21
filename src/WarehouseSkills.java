@@ -37,4 +37,32 @@ public class WarehouseSkills {
             return rs.next() ? rs.getString("bin_id") : "No bins available.";
         } catch (SQLException e) { return "Search error."; }
     }
+
+    // NEW SKILL: Search by description
+    public static String searchProductByDescription(String keyword) {
+        String dbUrl = "jdbc:sqlite:warehouse_demo.db";
+        String query = "SELECT product_id, product_name FROM products WHERE product_name LIKE ? LIMIT 5";
+        
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(dbUrl);
+             java.sql.PreparedStatement pstmt = conn.prepareStatement(query)) {
+            
+            // The % signs allow partial matches (e.g., searching "fan" finds "Ceiling Fan")
+            pstmt.setString(1, "%" + keyword + "%");
+            java.sql.ResultSet rs = pstmt.executeQuery();
+            
+            StringBuilder results = new StringBuilder("Search Results:\n");
+            boolean found = false;
+            
+            while(rs.next()) {
+                found = true;
+                results.append("- ID: ").append(rs.getString("product_id"))
+                       .append(" | Name: ").append(rs.getString("product_name")).append("\n");
+            }
+            
+            return found ? results.toString() : "No products found matching: " + keyword;
+            
+        } catch (Exception e) {
+            return "Database search error: " + e.getMessage();
+        }
+    }
 }
