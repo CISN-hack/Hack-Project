@@ -35,11 +35,12 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "weight": { "type": "number" },
-          "volume": { "type": "number" },
-          "velocity": { "type": "integer" }
+          "weight": { "type": "number", "description": "The TOTAL weight of the incoming shipment." },
+          "volume": { "type": "number", "description": "The TOTAL volume of the incoming shipment." },
+          "velocity": { "type": "integer" },
+          "productId": { "type": "string", "description": "The exact ID of the product being stored (e.g., 'KU50Y')." }
         },
-        "required": ["weight", "volume", "velocity"]
+        "required": ["weight", "volume", "velocity", "productId"]
       }
     }
   },
@@ -54,6 +55,22 @@
           "keyword": { "type": "string", "description": "A single keyword from the product description." }
         },
         "required": ["keyword"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "updateBinStatus",
+      "description": "Use this to update the database AFTER a worker places items in a bin. It records the new status and the exact Product ID inside the bin.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "binId": { "type": "string" },
+          "status": { "type": "string", "enum": ["Empty", "Half", "Full"] },
+          "productId": { "type": "string", "description": "The exact ID of the product being stored (e.g., 'KU50Y')." }
+        },
+        "required": ["binId", "status", "productId"]
       }
     }
   }
