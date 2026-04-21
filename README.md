@@ -9,6 +9,7 @@
   * **Tool 2**: Queries the **Sales Database API** -> *"iPhones sell fast, fridges sell slow."*
   * **Tool 3**: Queries the **Product API** -> *"iPhones are 100g, fridges are 40kg."* (LLM need to do the calculation by himself)
   * **Tool 4**: Queries the **Warehouse Database API** -> *"Aisle 4 can only hold 200kg, and is currently empty."*
+  * **Tool 5**: Queries the **Product Database API** -> *"grey kdk 3 blade fan is likely to be KU50Y"*
 
 - **Step 3 (Edge Case Handling)**: ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
     
