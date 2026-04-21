@@ -1,4 +1,10 @@
 # Warehouse Stock Manager
+- How to run the backend for now ? (Not working without Zai API)
+* 1 Download extension : Java pack , SQLite , SQLite viewer
+* 2 Open terminal and type : exit then hit enter
+* 3 type : javac -cp "lib/*" src/*.java
+* 4 type : java -cp "lib/*;src" AIAgent
+* 5 Start your conversation with AI
 - Warehouse : E-commerce warehouse  (Supplier goods delivered -> workers handle -> based on customer's Purchase Order(PO) )
 
 ## Main Idea
