@@ -1,4 +1,4 @@
-# Warehouse Restock Manager
+# Warehouse Stock Manager
 - Warehouse : E-commerce warehouse  (Supplier goods delivered -> workers handle -> based on customer's Purchase Order(PO) )
 
 ## Main Idea
@@ -8,6 +8,7 @@
   * **Tool 1**: Queries the **Purchase Database API** -> *"7 light bars occurs in recent Purchase Order"*
   * **Tool 2**: Queries the **Sales Database API** -> *"iPhones sell fast, fridges sell slow."*
   * **Tool 3**: Queries the **Product API** -> *"iPhones are 100g, fridges are 40kg."* (LLM need to do the calculation by himself)
+  * **Tool 4**: Queries the **Warehouse Database API** -> *"Aisle 4 can only hold 200kg, and is currently empty."*
 
 - **Step 3 (Edge Case Handling)**: ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
     
@@ -32,6 +33,11 @@ current_items: [List of product IDs currently stored here]
 
 - **The "Missing Item" Ambiguity**: The user asks where to put "the new shipment," but forgets to say what the shipment is, forcing the AI to ask a clarifying follow-up question.
 
+- **The "Blocked Aisle" Exception**: The user says, "Put the new stock in Aisle 4," but the AI has been informed that Aisle 4 is currently blocked due to a forklift breakdown, forcing it to reroute the worker.
+
+-**The "Viral Product" Opportunity**: The AI notices that a specific product is suddenly selling much faster than usual (e.g., due to a viral TikTok video) and proactively suggests moving that product to a more accessible location for faster picking.
+
+-**The "New Worker" Scenario**: A temporary worker who is unfamiliar with the warehouse layout asks for guidance on where to put a new shipment, and the AI provides a simple, conversational interface to direct them.
 ## Usefull Notes
 ### The Core Difference: "System of Record" vs. "System of Intelligence"
 Standard warehouses use a Warehouse Management System (WMS). A WMS is essentially a giant database. It is a System of Record.
