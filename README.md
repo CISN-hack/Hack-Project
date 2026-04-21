@@ -1,4 +1,4 @@
-# Warehouse Stock Manager
+# Warehouse Restock Manager
 - How to run the backend for now ? (Not working without Zai API)
 * 1 Download extension : Java pack , SQLite , SQLite viewer
 * 2 Open terminal and type : exit then hit enter
