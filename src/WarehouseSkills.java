@@ -3,8 +3,8 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-
 import com.google.gson.JsonObject;
+import java.io.IOException;
 
 public class WarehouseSkills {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
@@ -92,10 +92,11 @@ public class WarehouseSkills {
 
         // Telegram notification
         String botToken = "8636072818:AAG4o-SaBaFss43B55lZDluadOtLF8jVsjM";
-        String chatId = "1324772413";
+        String chatId = "5245006618";
 
-        String alertMessage = "<b>🚨 WAREHOUSE ALERT 🚨</b>\n" +
-                              "📍 <b>Location:</b> " + escapeHtml(location) + "\n" +
+        String alertMessage = """
+                              <b>\ud83d\udea8 WAREHOUSE ALERT \ud83d\udea8</b>
+                              \ud83d\udccd <b>Location:</b> """ + escapeHtml(location) + "\n" +
                               "⚠️ <b>Issue:</b> " + escapeHtml(description) + "\n" +
                               "🔒 <b>Action:</b> " + binsBlocked + " bins blocked. Zai is rerouting traffic.";
 
@@ -122,7 +123,7 @@ public class WarehouseSkills {
                        + " | Response: " + response.body();
             }
 
-        } catch (Exception e) {
+        } catch (IOException | InterruptedException e) {
             return "Accident logged, bins blocked, but failed to reach Telegram API: " + e.getMessage();
         }
 
