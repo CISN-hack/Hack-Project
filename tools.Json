@@ -73,5 +73,26 @@
         "required": ["binId", "status", "productId"]
       }
     }
+  },
+  {
+  "type": "function",
+  "function": {
+    "name": "reportAccident",
+    "description": "Call this immediately when a worker reports an accident, blockage, spill, or broken equipment (like a forklift) in a specific area. It alerts the manager via Telegram and temporarily blocks the aisle in the routing system.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "The location of the incident, e.g., 'Aisle 2', 'Loading Dock B'."
+        },
+        "description": {
+          "type": "string",
+          "description": "A brief summary of what happened, e.g., 'Forklift broke down', 'Oil spill'."
+        }
+      },
+      "required": ["location", "description"]
+    }
   }
+}
 ]

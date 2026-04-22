@@ -8,41 +8,41 @@ public class BinDatabaseSetup {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
     public static void main(String[] args) {
-
-        createTable(); 
-        
-
-        insertMockData(); 
+        createTable();
+        insertMockData();
     }
 
-    // THE NEW METHOD: This ensures your database schema is always perfect
     public static void createTable() {
         String dropSql = "DROP TABLE IF EXISTS Bins;";
-        
+
         String createSql = "CREATE TABLE Bins (" +
                            "bin_id TEXT PRIMARY KEY, " +
-                           "status TEXT, " +
+                           // Core occupancy status — 3 states only
+                           "status TEXT CHECK(status IN ('Empty', 'Half', 'Full')), " +
+                           // Separate blocked flag — independent of occupancy
+                           "blocked_status TEXT CHECK(blocked_status IN ('Blocked', 'Clear')) DEFAULT 'Clear', " +
                            "max_weight_capacity REAL, " +
                            "max_volume_m3 REAL, " +
                            "accessibility_score INTEGER, " +
-                           "Product1 TEXT, " +  
-                           "Product2 TEXT" +    
+                           "Product1 TEXT, " +
+                           "Product2 TEXT" +
                            ");";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement()) {
-            
+
             stmt.execute(dropSql);
             stmt.execute(createSql);
-            System.out.println("New table created.");
-            
+            System.out.println("Table created: status ('Empty','Half','Full') + blocked_status ('Blocked','Clear').");
+
         } catch (SQLException e) {
             System.out.println("Failed to create table: " + e.getMessage());
         }
     }
 
     public static void insertMockData() {
-        String sql = "INSERT INTO Bins (bin_id, status, max_weight_capacity, max_volume_m3, accessibility_score, Product1, Product2) VALUES (?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO Bins (bin_id, status, blocked_status, max_weight_capacity, max_volume_m3, accessibility_score, Product1, Product2) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -53,12 +53,13 @@ public class BinDatabaseSetup {
                 for (int shelf = 1; shelf <= 2; shelf++) {
                     for (int level = 1; level <= 3; level++) {
                         for (int bin = 1; bin <= 3; bin++) {
-                            
+
                             String binId = "A" + aisle + "-S" + shelf + "-L" + level + "-B" + bin;
-                            String status = "Empty"; 
-                            
+                            String status = "Empty";
+                            String blockedStatus = "Clear"; // All bins start as Clear
+
                             double maxWeight = 0;
-                            double maxVolume = 0; 
+                            double maxVolume = 0;
                             int accessibilityScore = 0;
 
                             switch (level) {
@@ -69,11 +70,12 @@ public class BinDatabaseSetup {
 
                             pstmt.setString(1, binId);
                             pstmt.setString(2, status);
-                            pstmt.setDouble(3, maxWeight);
-                            pstmt.setDouble(4, maxVolume);       
-                            pstmt.setInt(5, accessibilityScore);
-                            pstmt.setString(6, null); 
+                            pstmt.setString(3, blockedStatus); // <-- New column
+                            pstmt.setDouble(4, maxWeight);
+                            pstmt.setDouble(5, maxVolume);
+                            pstmt.setInt(6, accessibilityScore);
                             pstmt.setString(7, null);
+                            pstmt.setString(8, null);
 
                             pstmt.executeUpdate();
                             totalBinsCreated++;
@@ -81,12 +83,13 @@ public class BinDatabaseSetup {
                     }
                 }
             }
-            
-            System.out.println("Success: " + totalBinsCreated + " bins have been initialized.");
+
+            System.out.println("Success: " + totalBinsCreated + " bins initialized.");
 
         } catch (SQLException e) {
             System.out.println("Failed to insert mock data: " + e.getMessage());
         }
     }
 }
+
 
