@@ -94,5 +94,22 @@
       "required": ["location", "description"]
     }
   }
-}
+  },
+  {
+  "type": "function",
+  "function": {
+    "name": "clearAisle",
+    "description": "Call this when a worker or manager confirms that a previously blocked aisle or area is now safe and accessible. It unblocks all bins in the routing system and notifies the manager via Telegram.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "location": {
+          "type": "string",
+          "description": "The location to unblock, e.g., 'Aisle 2', 'Loading Dock B'."
+        }
+      },
+      "required": ["location"]
+    }
+  }
+  }
 ]

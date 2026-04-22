@@ -23,6 +23,11 @@ public class AIAgent {
         "  • After the tool returns, reassure the worker: management has been notified and routing has been recalculated to avoid the area.\n" +
         "  • Do NOT continue any delivery workflow while an emergency is being reported.\n\n" +
 
+        "PROTOCOL CLEAR (AISLE REOPENING):\n" +
+        "  • If the worker or manager says an aisle or area is now safe, clear, or back to normal, IMMEDIATELY call 'clearAisle' with the location.\n" +
+        "  • After the tool returns, confirm to the worker that the area is unblocked and routing has been restored.\n" +
+        "  • Do NOT continue any delivery workflow until you have called 'clearAisle'.\n\n" +
+
         "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
 
         "STEP 1 — IDENTIFY THE PRODUCT:\n" +
@@ -263,6 +268,7 @@ public class AIAgent {
             boolean hadError = false;
             boolean updateBinStatusBlocked = false;
             boolean accidentReported = false;
+            boolean aisleCleared = false;
             boolean quantityMissing = false;
 
             for (JsonElement toolEl : toolCalls) {
@@ -298,6 +304,8 @@ public class AIAgent {
                     }
                 } else if ("reportAccident".equals(funcName)) {
                     accidentReported = true;
+                } else if ("clearAisle".equals(funcName)) {
+                    aisleCleared = true;
                 }
 
                 JsonObject toolResultMsg = new JsonObject();
@@ -335,6 +343,17 @@ public class AIAgent {
             // doesn't redundantly re-call it on the next turn.
             if (accidentReported) {
                 String reply = "Management has been notified and routing has been recalculated to avoid the area. Stay safe.";
+                System.out.println("\nZai: " + reply);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
+                conversationHistory.add(aMsg);
+                return;
+            }
+
+            // clearAisle is also a terminal one-shot action.
+            if (aisleCleared) {
+                String reply = "The area has been unblocked and routing has been restored. Workers can now access the aisle.";
                 System.out.println("\nZai: " + reply);
                 JsonObject aMsg = new JsonObject();
                 aMsg.addProperty("role", "assistant");
@@ -435,6 +454,9 @@ public class AIAgent {
                         lastArrivingQuantity = -1;
                     }
                     return accidentResult;
+
+                case "clearAisle":
+                    return WarehouseSkills.clearAisle(args.get("location").getAsString());
 
                 default:
                     return TOOL_ERROR_PREFIX + " Unknown tool '" + funcName + "'";
