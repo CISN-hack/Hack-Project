@@ -4,6 +4,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 
@@ -14,19 +16,53 @@ public class AIAgent {
     private static final String MODEL_ID  = "meta/llama-3.3-70b-instruct";
 
     private static final String SYSTEM_INSTRUCTION =
-        "You are Zai, a Warehouse System of Intelligence. " +
-        "PROTOCOL ALPHA: If a worker mentions a delivery, call 'readLocalPurchaseOrder' first. " +
-        "If the worker used a product name instead of ID, use 'searchProductByDescription'. " +
-        "CROSS-DOCK: Compare incoming stock against PO demand. If it matches, tell worker to route the demanded quantity to 'Packing Counter' immediately. " +
-        "If incoming ≤ PO demand, send ALL to packing, do not bin. " +
-        "If incoming > PO or not on PO, bin the REMAINDER. " +
-        "For binning: use 'getProductAnalysis', calculate total weight/volume for REMAINDER, then 'findOptimalBin'. " +
-        "HOLD: After finding a bin, tell the worker the location and wait for them to reply 'done'. Do NOT call 'updateBinStatus' yet. " +
-        "COMMIT: ONLY after worker confirms 'done', use 'updateBinStatus'. " +
-        "Refuse new tasks until 'done' is confirmed.";
+        "You are Zai, a Warehouse System of Intelligence.\n\n" +
+
+        "PROTOCOL OMEGA (EMERGENCY — overrides everything else):\n" +
+        "  • If the worker reports a broken machine, spill, blocked aisle, fire, injury, or any accident, IMMEDIATELY call 'reportAccident' with the location and description.\n" +
+        "  • After the tool returns, reassure the worker: management has been notified and routing has been recalculated to avoid the area.\n" +
+        "  • Do NOT continue any delivery workflow while an emergency is being reported.\n\n" +
+
+        "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
+
+        "STEP 1 — IDENTIFY THE PRODUCT:\n" +
+        "  • If the worker gave a product ID (e.g. 'K15VC'), call 'getProductAnalysis' with that ID.\n" +
+        "  • If the worker described a product by name (e.g. 'ceiling fan'), call 'searchProductByDescription' first to find the ID, then call 'getProductAnalysis' with the result.\n" +
+        "  • Do NOT proceed until you have a confirmed product ID.\n\n" +
+
+        "STEP 1b — GET ARRIVING QUANTITY:\n" +
+        "  • Ask the worker: 'How many units of [product name] arrived?'\n" +
+        "  • Do NOT proceed until the worker gives you a number.\n" +
+        "  • Store this number — you will need it to decide routing in STEP 2.\n\n" +
+
+        "STEP 2 — CHECK THE PURCHASE ORDER:\n" +
+        "  • Call 'readLocalPurchaseOrder'.\n" +
+        "  • A [PO MATCH FOUND] or [NO PO MATCH] message will be injected automatically after the result.\n" +
+        "  • Read it carefully and follow its routing instruction exactly.\n\n" +
+
+        "STEP 3 — BINNING (only if needed):\n" +
+        "  • Use the product analysis from Step 1 to calculate weight/volume for the units being binned.\n" +
+        "  • Call 'findOptimalBin' with those values.\n\n" +
+
+        "STEP 4 — TELL THE WORKER (CRITICAL — DO NOT SKIP):\n" +
+        "  • After 'findOptimalBin' returns, STOP calling tools immediately.\n" +
+        "  • Reply with a TEXT MESSAGE ONLY (no tool calls).\n" +
+        "  • The message MUST include:\n" +
+        "      – How many units go to the Packing Counter (if any)\n" +
+        "      – How many units go to the bin, and the exact bin ID\n" +
+        "      – End with: 'Reply \"done\" when you have placed the items.'\n" +
+        "  • STOP. Do not call any tool until the worker replies with 'done'.\n\n" +
+
+        "STEP 5 — COMMIT (only after worker confirms):\n" +
+        "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
+        "  • NEVER call updateBinStatus right after findOptimalBin — it WILL be rejected.\n\n" +
+
+        "Refuse new tasks until the current one is confirmed.";
 
     private static final String TOOL_ERROR_PREFIX = "TOOL_DISPATCH_ERROR:";
     private static final JsonArray conversationHistory = new JsonArray();
+
+    private static String lastArrivingProductId = "";
 
     private static JsonArray getToolsJson() {
         try {
@@ -35,6 +71,71 @@ public class AIAgent {
             System.out.println("CRITICAL: tools.json not found!");
             return new JsonArray();
         }
+    }
+
+    // Deterministic PO matching done in Java so the model can't miss or misread a hit.
+    // Injected as a user-role message after readLocalPurchaseOrder so the model sees explicit routing.
+    private static String buildPoMatchMessage(String csvData, String arrivingProductId) {
+        if (arrivingProductId == null || arrivingProductId.isBlank()) {
+            return "[PO MATCH SKIPPED] No arriving product ID was recorded. Ask the worker for the product ID.";
+        }
+
+        String[] lines = csvData.split("\\r?\\n");
+        if (lines.length < 2) {
+            return "[NO PO MATCH] PO file is empty or unreadable. Bin all arriving units.";
+        }
+
+        String[] headers = lines[0].split(",");
+        int colCustomer  = -1;
+        int colProductId = -1;
+        int colQty       = -1;
+        int colPriority  = -1;
+
+        for (int i = 0; i < headers.length; i++) {
+            String h = headers[i].trim().toLowerCase();
+            if (h.equals("customername") || h.equals("customer_name") || h.equals("customer"))
+                colCustomer = i;
+            else if (h.equals("productid") || h.equals("product_id") || h.equals("product"))
+                colProductId = i;
+            else if (h.equals("quantity") || h.equals("qty"))
+                colQty = i;
+            else if (h.equals("priority"))
+                colPriority = i;
+        }
+
+        if (colProductId == -1) {
+            return "[PO MATCH ERROR] Could not find ProductID column in PO file. Bin all arriving units.";
+        }
+
+        for (int i = 1; i < lines.length; i++) {
+            if (lines[i].isBlank()) continue;
+            String[] cols = lines[i].split(",");
+            if (cols.length <= colProductId) continue;
+
+            String poProductId = cols[colProductId].trim();
+            if (poProductId.equalsIgnoreCase(arrivingProductId.trim())) {
+                String customer = (colCustomer >= 0 && colCustomer < cols.length)
+                        ? cols[colCustomer].trim() : "Unknown Customer";
+                String qty = (colQty >= 0 && colQty < cols.length)
+                        ? cols[colQty].trim() : "?";
+                String priority = (colPriority >= 0 && colPriority < cols.length)
+                        ? cols[colPriority].trim() : "Standard";
+
+                return "[PO MATCH FOUND]\n" +
+                       "Product : " + poProductId + "\n" +
+                       "Customer: " + customer + "\n" +
+                       "PO Qty  : " + qty + " units\n" +
+                       "Priority: " + priority + "\n\n" +
+                       "ROUTING INSTRUCTION:\n" +
+                       "Route " + qty + " units to the Packing Counter for " + customer +
+                       " (" + priority + " priority).\n" +
+                       "If arriving qty > " + qty + ", bin the remainder using getProductAnalysis + findOptimalBin.\n" +
+                       "If arriving qty <= " + qty + ", send ALL to Packing Counter — do NOT bin anything.";
+            }
+        }
+
+        return "[NO PO MATCH] Product '" + arrivingProductId + "' is not in the current PO.\n" +
+               "ROUTING INSTRUCTION: Bin all arriving units using getProductAnalysis + findOptimalBin.";
     }
 
     public static String callAPI(JsonArray history, boolean allowTools) {
@@ -68,7 +169,7 @@ public class AIAgent {
                 HttpResponse<String> resp = client.send(request, HttpResponse.BodyHandlers.ofString());
                 String body = resp.body();
                 if (resp.statusCode() == 429 || body.contains("\"status\":429")) {
-                    System.out.println("[RATE LIMIT] Attempt " + attempt + "/3 — waiting " + (waitMs/1000) + "s...");
+                    System.out.println("[RATE LIMIT] Attempt " + attempt + "/3 — waiting " + (waitMs / 1000) + "s...");
                     if (attempt < maxRetries) {
                         Thread.sleep(waitMs);
                         waitMs *= 2;
@@ -110,33 +211,42 @@ public class AIAgent {
             System.out.println("[API ERROR] " + msg);
             return;
         }
-        if (root.has("status") && root.get("status").getAsInt() != 200) {
-            System.out.println("[API ERROR " + root.get("status").getAsInt() + "]");
-            return;
-        }
 
         JsonObject message;
         try {
-            message = root.getAsJsonArray("choices").get(0).getAsJsonObject().getAsJsonObject("message");
+            message = root.getAsJsonArray("choices").get(0)
+                    .getAsJsonObject().getAsJsonObject("message");
         } catch (Exception e) {
-            System.out.println("[ERROR] Unexpected response: " + jsonResponse);
+            System.out.println("[ERROR] Unexpected response structure: " + jsonResponse);
             return;
         }
 
-        if (message.has("tool_calls")) {
+        if (message.has("tool_calls") && !message.get("tool_calls").isJsonNull()) {
 
             if (depth >= MAX_DEPTH) {
-                System.out.println("[WARNING] Max depth. Forcing text reply.");
+                System.out.println("[WARNING] Max depth reached. Forcing text reply.");
                 try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
                 processAIResponse(callAPI(conversationHistory, false), depth);
                 return;
             }
 
             JsonArray toolCalls = message.getAsJsonArray("tool_calls");
+
+            // Empty tool_calls array: nothing to do. Fall through to text branch so we don't
+            // recurse with tools re-enabled and trigger a retry storm.
+            if (toolCalls.size() == 0) {
+                if (message.has("content") && !message.get("content").isJsonNull()) {
+                    String content = message.get("content").getAsString();
+                    if (!content.isBlank()) System.out.println("\nZai: " + content);
+                }
+                conversationHistory.add(message);
+                return;
+            }
+
             conversationHistory.add(message);
 
             boolean hadError = false;
-            boolean ranFindBin = false;
+            boolean updateBinStatusBlocked = false;
 
             for (JsonElement toolEl : toolCalls) {
                 JsonObject toolCallObj = toolEl.getAsJsonObject();
@@ -163,10 +273,9 @@ public class AIAgent {
 
                 if (toolOutput.startsWith(TOOL_ERROR_PREFIX)) {
                     hadError = true;
-                }
-
-                if ("findOptimalBin".equals(funcName)) {
-                    ranFindBin = true;
+                    if ("updateBinStatus".equals(funcName) && toolOutput.contains("BLOCKED")) {
+                        updateBinStatusBlocked = true;
+                    }
                 }
 
                 JsonObject toolResultMsg = new JsonObject();
@@ -174,19 +283,34 @@ public class AIAgent {
                 toolResultMsg.addProperty("tool_call_id", toolCallId);
                 toolResultMsg.addProperty("content", toolOutput);
                 conversationHistory.add(toolResultMsg);
+
+                if ("readLocalPurchaseOrder".equals(funcName)) {
+                    String matchResult = buildPoMatchMessage(toolOutput, lastArrivingProductId);
+                    System.out.println("\n[SYSTEM PO CHECK]\n" + matchResult);
+
+                    JsonObject poCheckMsg = new JsonObject();
+                    poCheckMsg.addProperty("role", "user");
+                    poCheckMsg.addProperty("content",
+                        "[SYSTEM PO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
+                    conversationHistory.add(poCheckMsg);
+                }
             }
 
-            // CRITICAL FIX: After findOptimalBin runs, get ONE final text reply
-            // and STOP. Don't recurse further. Worker must confirm before continuing.
-            if (ranFindBin) {
-                System.out.println("[Zai is preparing final instruction...]");
-                try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
-                String finalResp = callAPI(conversationHistory, false); // force text
-                processTextOnly(finalResp); // extract text, add to history, print, STOP
+            // If updateBinStatus was blocked, the model jumped ahead. Stop the API chain and
+            // emit a direct text reply so the worker can respond with 'done' to continue.
+            if (updateBinStatusBlocked) {
+                String binId = findLastBinId();
+                String reply = binId != null
+                        ? "Please place the items in bin " + binId + " and reply 'done' when you have placed them."
+                        : "Please place the items and reply 'done' when you have placed them.";
+                System.out.println("\nZai: " + reply);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
+                conversationHistory.add(aMsg);
                 return;
             }
 
-            // For other tool chains or errors, continue normally
             if (hadError) {
                 System.out.println("[Zai is recovering...]");
                 try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
@@ -199,23 +323,9 @@ public class AIAgent {
             processAIResponse(callAPI(conversationHistory), depth + 1);
 
         } else if (message.has("content") && !message.get("content").isJsonNull()) {
-            System.out.println("\nZai: " + message.get("content").getAsString());
+            String content = message.get("content").getAsString();
+            System.out.println("\nZai: " + content);
             conversationHistory.add(message);
-        }
-    }
-
-    // Extract and display ONLY the text content, no further recursion.
-    private static void processTextOnly(String jsonResponse) {
-        try {
-            JsonObject root = JsonParser.parseString(jsonResponse).getAsJsonObject();
-            JsonObject message = root.getAsJsonArray("choices").get(0)
-                    .getAsJsonObject().getAsJsonObject("message");
-            if (message.has("content") && !message.get("content").isJsonNull()) {
-                System.out.println("\nZai: " + message.get("content").getAsString());
-                conversationHistory.add(message);
-            }
-        } catch (Exception e) {
-            System.out.println("[ERROR] Could not parse final text response.");
         }
     }
 
@@ -227,6 +337,8 @@ public class AIAgent {
                             args.has("filePath") ? args.get("filePath").getAsString() : "PO_April20.csv");
 
                 case "getProductAnalysis":
+                    lastArrivingProductId = args.get("productId").getAsString().toUpperCase();
+                    System.out.println("[SYSTEM] AI resolved product ID: " + lastArrivingProductId);
                     return WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
 
                 case "findOptimalBin":
@@ -237,18 +349,31 @@ public class AIAgent {
                             args.get("productId").getAsString());
 
                 case "searchProductByDescription":
-                    return WarehouseSkills.searchProductByDescription(args.get("keyword").getAsString());
+                    String searchResult = WarehouseSkills.searchProductByDescription(args.get("keyword").getAsString());
+                    Matcher m = Pattern
+                        .compile("(?i)(?:product[:\\s]+|id[:\\s]+)([A-Z0-9][A-Z0-9\\-]{1,14})")
+                        .matcher(searchResult);
+                    if (m.find()) {
+                        lastArrivingProductId = m.group(1).toUpperCase();
+                        System.out.println("[SYSTEM] AI resolved product ID via search: " + lastArrivingProductId);
+                    }
+                    return searchResult;
 
                 case "updateBinStatus":
                     if (!workerJustConfirmed()) {
                         return TOOL_ERROR_PREFIX +
                                " updateBinStatus BLOCKED. Worker has not confirmed placement. " +
-                               "Tell worker the bin location and wait for 'done'.";
+                               "Tell the worker the bin location and wait for 'done'.";
                     }
                     return InventoryTools.updateBinStatus(
                             args.get("binId").getAsString(),
                             args.get("status").getAsString(),
                             args.get("productId").getAsString());
+
+                case "reportAccident":
+                    return WarehouseSkills.reportAccident(
+                            args.get("location").getAsString(),
+                            args.get("description").getAsString());
 
                 default:
                     return TOOL_ERROR_PREFIX + " Unknown tool '" + funcName + "'";
@@ -258,11 +383,25 @@ public class AIAgent {
         }
     }
 
+    private static final Pattern BIN_ID_PATTERN = Pattern.compile("[A-Z]\\d+-S\\d+-L\\d+-B\\d+");
+
+    private static String findLastBinId() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !"tool".equals(msg.get("role").getAsString())) continue;
+            if (!msg.has("content")) continue;
+            Matcher m = BIN_ID_PATTERN.matcher(msg.get("content").getAsString());
+            if (m.find()) return m.group();
+        }
+        return null;
+    }
+
     private static boolean workerJustConfirmed() {
         for (int i = conversationHistory.size() - 1; i >= 0; i--) {
             JsonObject msg = conversationHistory.get(i).getAsJsonObject();
             if ("user".equals(msg.get("role").getAsString())) {
                 String content = msg.get("content").getAsString().toLowerCase();
+                if (content.startsWith("[system")) continue; // skip injected PO check messages
                 return content.contains("done")
                     || content.contains("placed")
                     || content.contains("confirmed")
