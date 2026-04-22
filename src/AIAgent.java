@@ -63,6 +63,21 @@ public class AIAgent {
     private static final JsonArray conversationHistory = new JsonArray();
 
     private static String lastArrivingProductId = "";
+    private static int lastArrivingQuantity = -1;
+
+    private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
+
+    // Extract a bare integer from the worker's message (e.g. "a lorry of 50 K15VC" -> 50).
+    // Word-boundary anchors mean embedded digits like "15" inside "K15VC" are ignored.
+    private static void tryUpdateArrivingQuantity(String userInput) {
+        Matcher m = STANDALONE_NUMBER.matcher(userInput);
+        while (m.find()) {
+            try {
+                int q = Integer.parseInt(m.group(1));
+                if (q > 0 && q < 100000) { lastArrivingQuantity = q; return; }
+            } catch (NumberFormatException ignored) {}
+        }
+    }
 
     private static JsonArray getToolsJson() {
         try {
@@ -247,6 +262,8 @@ public class AIAgent {
 
             boolean hadError = false;
             boolean updateBinStatusBlocked = false;
+            boolean accidentReported = false;
+            boolean quantityMissing = false;
 
             for (JsonElement toolEl : toolCalls) {
                 JsonObject toolCallObj = toolEl.getAsJsonObject();
@@ -276,6 +293,11 @@ public class AIAgent {
                     if ("updateBinStatus".equals(funcName) && toolOutput.contains("BLOCKED")) {
                         updateBinStatusBlocked = true;
                     }
+                    if (toolOutput.contains("QUANTITY_MISSING")) {
+                        quantityMissing = true;
+                    }
+                } else if ("reportAccident".equals(funcName)) {
+                    accidentReported = true;
                 }
 
                 JsonObject toolResultMsg = new JsonObject();
@@ -294,6 +316,31 @@ public class AIAgent {
                         "[SYSTEM PO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
                     conversationHistory.add(poCheckMsg);
                 }
+            }
+
+            // Gate: the PO check can't run without a known arrival quantity. Ask the worker
+            // directly rather than letting the model hallucinate a number.
+            if (quantityMissing) {
+                String productLabel = lastArrivingProductId.isEmpty() ? "the product" : lastArrivingProductId;
+                String reply = "Before I check the purchase order — how many units of " + productLabel + " arrived?";
+                System.out.println("\nZai: " + reply);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
+                conversationHistory.add(aMsg);
+                return;
+            }
+
+            // reportAccident is a terminal one-shot action. Break the chain so the model
+            // doesn't redundantly re-call it on the next turn.
+            if (accidentReported) {
+                String reply = "Management has been notified and routing has been recalculated to avoid the area. Stay safe.";
+                System.out.println("\nZai: " + reply);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
+                conversationHistory.add(aMsg);
+                return;
             }
 
             // If updateBinStatus was blocked, the model jumped ahead. Stop the API chain and
@@ -333,6 +380,10 @@ public class AIAgent {
         try {
             switch (funcName) {
                 case "readLocalPurchaseOrder":
+                    if (lastArrivingQuantity <= 0) {
+                        return TOOL_ERROR_PREFIX +
+                               " QUANTITY_MISSING. Do not check the PO yet. Ask the worker how many units arrived first.";
+                    }
                     return LocalFileTools.readLocalPurchaseOrder(
                             args.has("filePath") ? args.get("filePath").getAsString() : "PO_April20.csv");
 
@@ -365,15 +416,25 @@ public class AIAgent {
                                " updateBinStatus BLOCKED. Worker has not confirmed placement. " +
                                "Tell the worker the bin location and wait for 'done'.";
                     }
-                    return InventoryTools.updateBinStatus(
+                    String binResult = InventoryTools.updateBinStatus(
                             args.get("binId").getAsString(),
                             args.get("status").getAsString(),
                             args.get("productId").getAsString());
+                    if (!binResult.startsWith(TOOL_ERROR_PREFIX)) {
+                        lastArrivingProductId = "";
+                        lastArrivingQuantity = -1;
+                    }
+                    return binResult;
 
                 case "reportAccident":
-                    return WarehouseSkills.reportAccident(
+                    String accidentResult = WarehouseSkills.reportAccident(
                             args.get("location").getAsString(),
                             args.get("description").getAsString());
+                    if (!accidentResult.startsWith(TOOL_ERROR_PREFIX)) {
+                        lastArrivingProductId = "";
+                        lastArrivingQuantity = -1;
+                    }
+                    return accidentResult;
 
                 default:
                     return TOOL_ERROR_PREFIX + " Unknown tool '" + funcName + "'";
@@ -437,6 +498,8 @@ public class AIAgent {
             String userInput = scanner.nextLine().trim();
             if (userInput.equalsIgnoreCase("exit")) break;
             if (userInput.isEmpty()) continue;
+
+            tryUpdateArrivingQuantity(userInput);
 
             if (isGreeting(userInput)) {
                 String greetReply = "Hey! I'm Zai, your warehouse intelligence system. Ready to help!";
