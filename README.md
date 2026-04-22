@@ -67,8 +67,9 @@ Your AI agent looks at external data. If it sees that a specific brand of headph
 2. Handling Real-Time Exceptions
 A standard tracking system breaks when reality doesn't match the database. If a forklift breaks down and blocks Aisle 2, a standard WMS still tells workers to put things in Aisle 2, causing a traffic jam.
 Your AI Agent can be informed: "Aisle 2 is blocked." It immediately recalculates and orchestrates a new workflow, dynamically rerouting workers to alternative shelves that fit the weight and size constraints of their pallets.
+And also will report the situation to the manager via telegram or any message.
 
-3. The "Conversational Interface" for Workers
+4. The "Conversational Interface" for Workers
 Enterprise software is notoriously clunky. New warehouse workers spend weeks learning how to use complex RF scanners and legacy database terminals.
 With your agent, the interface is natural language. A temporary worker just types (or speaks): "I have a pallet of dog food, but the assigned shelf is broken." The AI instantly cross-references the database, finds a safe alternative, and replies: "Understood. Reroute to Zone B, Shelf 9. I will update the inventory records for you."
 
