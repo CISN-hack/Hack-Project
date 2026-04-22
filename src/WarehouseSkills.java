@@ -9,6 +9,14 @@ import java.io.IOException;
 public class WarehouseSkills {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
+    // ── Telegram ──────────────────────────────────────────────────────────────
+    private static final String BOT_TOKEN = "8636072818:AAG4o-SaBaFss43B55lZDluadOtLF8jVsjM";
+    // Add or remove chat IDs here to manage the manager notification list
+    private static final String[] MANAGER_CHAT_IDS = {
+        "1324772413",  // Manager 1
+        "5245006618"   // Manager 2
+    };
+
     public static String getProductAnalysis(String productId) {
         String sql = "SELECT p.*, (SELECT SUM(quantity) FROM Sales WHERE product_id = p.product_id) as velocity " +
                      "FROM Products p WHERE p.product_id = ?";
@@ -86,48 +94,65 @@ public class WarehouseSkills {
 
     // Handles only notification — DB blocking is delegated to InventoryTools
     public static String reportAccident(String location, String description) {
-
-        // DB write delegated to InventoryTools
         int binsBlocked = InventoryTools.blockBinsByLocation(location);
 
-        // Telegram notification
-        String botToken = "8636072818:AAG4o-SaBaFss43B55lZDluadOtLF8jVsjM";
-        String chatId = "5245006618";
-
-        String alertMessage = """
-                              <b>\ud83d\udea8 WAREHOUSE ALERT \ud83d\udea8</b>
-                              \ud83d\udccd <b>Location:</b> """ + escapeHtml(location) + "\n" +
+        String alertMessage = "<b>🚨 WAREHOUSE ALERT 🚨</b>\n" +
+                              "📍 <b>Location:</b> " + escapeHtml(location) + "\n" +
                               "⚠️ <b>Issue:</b> " + escapeHtml(description) + "\n" +
                               "🔒 <b>Action:</b> " + binsBlocked + " bins blocked. Zai is rerouting traffic.";
 
-        try {
-            JsonObject jsonPayload = new JsonObject();
-            jsonPayload.addProperty("chat_id", chatId);
-            jsonPayload.addProperty("text", alertMessage);
-            jsonPayload.addProperty("parse_mode", "HTML");
+        String error = notifyAllManagers(alertMessage);
+        if (error != null) return "Accident logged, bins blocked, but Telegram failed: " + error;
 
-            java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create("https://api.telegram.org/bot" + botToken + "/sendMessage"))
-                    .header("Content-Type", "application/json")
-                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(jsonPayload.toString()))
-                    .build();
+        return "SUCCESS: Area '" + location + "' marked as blocked (" + binsBlocked + " bins locked). All managers notified via Telegram.";
+    }
 
-            java.net.http.HttpResponse<String> response = client.send(
-                    request,
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
+    // Handles only notification — DB clearing is delegated to InventoryTools
+    public static String clearAisle(String location) {
+        int binsCleared = InventoryTools.clearBinsByLocation(location);
 
-            if (response.statusCode() != 200) {
-                return "Telegram rejected the message. Status: " + response.statusCode()
-                       + " | Response: " + response.body();
+        String alertMessage = "<b>✅ AISLE CLEARED</b>\n" +
+                              "📍 <b>Location:</b> " + escapeHtml(location) + "\n" +
+                              "🔓 <b>Action:</b> " + binsCleared + " bins unblocked. Zai has restored routing to the area.";
+
+        String error = notifyAllManagers(alertMessage);
+        if (error != null) return "Aisle cleared in database, but Telegram failed: " + error;
+
+        return "SUCCESS: Area '" + location + "' is now clear (" + binsCleared + " bins unblocked). All managers notified via Telegram.";
+    }
+
+    // Sends an HTML Telegram message to every manager in MANAGER_CHAT_IDS.
+    // Returns null on full success, or the first error string encountered.
+    private static String notifyAllManagers(String alertMessage) {
+        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        for (String chatId : MANAGER_CHAT_IDS) {
+            try {
+                JsonObject payload = new JsonObject();
+                payload.addProperty("chat_id", chatId);
+                payload.addProperty("text", alertMessage);
+                payload.addProperty("parse_mode", "HTML");
+
+                java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
+                        .uri(java.net.URI.create("https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"))
+                        .header("Content-Type", "application/json")
+                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(payload.toString()))
+                        .build();
+
+                java.net.http.HttpResponse<String> response = client.send(
+                        request, java.net.http.HttpResponse.BodyHandlers.ofString());
+
+                System.out.println("[TELEGRAM -> " + chatId + "] Status: " + response.statusCode());
+                System.out.println("[TELEGRAM -> " + chatId + "] Body:   " + response.body());
+
+                if (response.statusCode() != 200) {
+                    return "chat " + chatId + " rejected with status " + response.statusCode()
+                           + ": " + response.body();
+                }
+            } catch (IOException | InterruptedException e) {
+                return "chat " + chatId + " exception: " + e.getMessage();
             }
-
-        } catch (IOException | InterruptedException e) {
-            return "Accident logged, bins blocked, but failed to reach Telegram API: " + e.getMessage();
         }
-
-        return "SUCCESS: Area '" + location + "' marked as blocked (" + binsBlocked + " bins locked). Manager notified via Telegram.";
+        return null;
     }
 
     private static String escapeHtml(String input) {

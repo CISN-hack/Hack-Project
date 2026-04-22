@@ -75,4 +75,23 @@ public class InventoryTools {
             return 0;
         }
     }
+
+    public static int clearBinsByLocation(String location) {
+        String clearSql = "UPDATE Bins SET blocked_status = 'Clear' WHERE bin_id LIKE ?";
+
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(clearSql)) {
+
+            String searchPrefix = location.replaceAll("[^0-9a-zA-Z]", "").toUpperCase();
+            if (searchPrefix.contains("AISLE")) {
+                searchPrefix = searchPrefix.replace("AISLE", "A");
+            }
+            pstmt.setString(1, searchPrefix + "%");
+            return pstmt.executeUpdate(); // returns number of bins unblocked
+
+        } catch (Exception e) {
+            System.out.println("[DB ERROR] Could not clear aisle: " + e.getMessage());
+            return 0;
+        }
+    }
 }
