@@ -35,23 +35,117 @@ public class WarehouseSkills {
         return "Product not found.";
     }
 
+    // Full-warehouse inventory: every product currently in a bin, grouped with its bin list.
+    public static String listWarehouseInventory() {
+        String sql =
+            "SELECT b.pid AS pid, p.product_name AS product_name, " +
+            "       GROUP_CONCAT(b.bin_id, ', ') AS bins, COUNT(*) AS bin_count " +
+            "FROM ( " +
+            "  SELECT Product1 AS pid, bin_id FROM Bins WHERE Product1 IS NOT NULL AND Product1 != '' " +
+            "  UNION ALL " +
+            "  SELECT Product2 AS pid, bin_id FROM Bins WHERE Product2 IS NOT NULL AND Product2 != '' " +
+            ") b " +
+            "LEFT JOIN Products p ON p.product_id = b.pid " +
+            "GROUP BY b.pid, p.product_name " +
+            "ORDER BY p.product_name";
+
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            ResultSet rs = pstmt.executeQuery();
+            StringBuilder sb = new StringBuilder();
+            int products = 0;
+            while (rs.next()) {
+                products++;
+                String pid = rs.getString("pid");
+                String name = rs.getString("product_name");
+                String bins = rs.getString("bins");
+                int binCount = rs.getInt("bin_count");
+                sb.append("- ").append(pid);
+                if (name != null) sb.append(" (").append(name).append(")");
+                sb.append(" — ").append(binCount).append(" bin(s): ").append(bins).append("\n");
+            }
+            return products > 0
+                ? "Current warehouse inventory — " + products + " product(s):\n" + sb
+                : "Warehouse is currently empty — no products stored in any bin.";
+        } catch (SQLException e) {
+            return "Database error: " + e.getMessage();
+        }
+    }
+
+    // Lists every bin currently holding the product in slot 1 or 2.
+    public static String findProductLocation(String productId) {
+        String sql = "SELECT bin_id, status, blocked_status FROM Bins " +
+                     "WHERE Product1 = ? OR Product2 = ?";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, productId);
+            pstmt.setString(2, productId);
+            ResultSet rs = pstmt.executeQuery();
+            StringBuilder sb = new StringBuilder();
+            int count = 0;
+            while (rs.next()) {
+                count++;
+                sb.append("- ").append(rs.getString("bin_id"))
+                  .append(" (status: ").append(rs.getString("status"))
+                  .append(", ").append(rs.getString("blocked_status")).append(")\n");
+            }
+            return count > 0
+                ? "Product " + productId + " is stored in " + count + " bin(s):\n" + sb
+                : "Product " + productId + " is not currently stored in any bin.";
+        } catch (SQLException e) {
+            return "Database error: " + e.getMessage();
+        }
+    }
+
+    // Returns [weight_kg_per_unit, volume_m3_per_unit, velocity] for a product, or null if not found.
+    // Used by AIAgent to compute totals itself instead of trusting the model's multiplication.
+    public static double[] getProductDimensions(String productId) {
+        String sql = "SELECT p.weight_kg, p.volume_m3, " +
+                     "(SELECT COALESCE(SUM(quantity), 0) FROM Sales WHERE product_id = p.product_id) AS velocity " +
+                     "FROM Products p WHERE p.product_id = ?";
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+            pstmt.setString(1, productId);
+            ResultSet rs = pstmt.executeQuery();
+            if (rs.next()) {
+                return new double[] {
+                    rs.getDouble("weight_kg"),
+                    rs.getDouble("volume_m3"),
+                    rs.getDouble("velocity")
+                };
+            }
+        } catch (SQLException ignored) {}
+        return null;
+    }
+
+    // based on weight, volume, velocity, and product ID (for affinity), finds the single best bin for storing the item
+    // based on the status of bins (half empty or fully empty), blocked_status (must be 'Clear'), and accessibility_score (must meet or exceed threshold based on velocity)
+    // prioritizes bins that already contain the same product (Product1 or Product2) to optimize for picking efficiency
+    // prioritiZes Half bins over Empty bins to maximize space utilization, but only if they meet the weight/volume requirements after accounting for existing contents
     public static String findOptimalBin(double weight, double volume, int velocity, String productId) {
         int targetAccess;
         if (velocity >= 80) targetAccess = 5;
         else if (velocity >= 30) targetAccess = 3;
         else targetAccess = 1;
 
-        String sql = "SELECT bin_id FROM Bins " +
-                     "WHERE status IN ('Empty', 'Half') " +
-                     "AND blocked_status = 'Clear' " +
-                     "AND (CASE WHEN status = 'Half' THEN max_weight_capacity * 0.5 ELSE max_weight_capacity END) >= ? " +
-                     "AND (CASE WHEN status = 'Half' THEN max_volume_m3 * 0.5 ELSE max_volume_m3 END) >= ? " +
-                     "ORDER BY " +
-                     "  CASE WHEN Product1 = ? OR Product2 = ? THEN 0 ELSE 1 END, " +
-                     "  CASE WHEN accessibility_score >= ? THEN 0 ELSE 1 END, " +
-                     "  CASE WHEN status = 'Half' THEN 1 ELSE 2 END, " +
-                     "  accessibility_score ASC " +
-                     "LIMIT 1";
+        // Join Products twice so remaining capacity reflects what is actually sitting in
+        // the bin — the old "Half == 50% free" approximation was wrong in both directions
+        // (too strict for a bulb, too lenient for a water heater).
+        // Order: Half first (consolidation), then same-product match, then accessibility tier.
+        String sql =
+            "SELECT b.bin_id FROM Bins b " +
+            "LEFT JOIN Products p1 ON b.Product1 = p1.product_id " +
+            "LEFT JOIN Products p2 ON b.Product2 = p2.product_id " +
+            "WHERE b.status IN ('Empty', 'Half') " +
+            "AND b.blocked_status = 'Clear' " +
+            "AND (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) >= ? " +
+            "AND (b.max_volume_m3      - COALESCE(p1.volume_m3, 0) - COALESCE(p2.volume_m3, 0)) >= ? " +
+            "ORDER BY " +
+            "  CASE WHEN b.status = 'Half' THEN 0 ELSE 1 END, " +
+            "  CASE WHEN b.Product1 = ? OR b.Product2 = ? THEN 0 ELSE 1 END, " +
+            "  CASE WHEN b.accessibility_score >= ? THEN 0 ELSE 1 END, " +
+            "  b.accessibility_score ASC " +
+            "LIMIT 1";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -106,6 +200,8 @@ public class WarehouseSkills {
 
         return "SUCCESS: Area '" + location + "' marked as blocked (" + binsBlocked + " bins locked). All managers notified via Telegram.";
     }
+
+
 
     // Handles only notification — DB clearing is delegated to InventoryTools
     public static String clearAisle(String location) {

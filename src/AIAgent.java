@@ -28,6 +28,19 @@ public class AIAgent {
         "  • After the tool returns, confirm to the worker that the area is unblocked and routing has been restored.\n" +
         "  • Do NOT continue any delivery workflow until you have called 'clearAisle'.\n\n" +
 
+        "PROTOCOL QUERY (INVENTORY LOOKUP — NOT a delivery):\n" +
+        "  • SINGLE PRODUCT — if the worker asks about ONE product (e.g. 'is there any K15VC?', 'do we have ceiling fans?', 'where is K15VC?'):\n" +
+        "      – Resolve the product ID first — use 'searchProductByDescription' if the worker gave a name instead of an ID.\n" +
+        "      – Call 'findProductLocation' with the product ID.\n" +
+        "      – Reply in plain language based on the tool's result:\n" +
+        "          · 0 bins found → 'No, there is no [product name] in the warehouse right now.'\n" +
+        "          · 1+ bins found → 'Yes — [product name] is stored in [N] bin(s): [bin list].'\n" +
+        "  • WHOLE WAREHOUSE — if the worker asks for the FULL inventory (e.g. 'what products do we have?', 'list everything in stock', 'show warehouse inventory'):\n" +
+        "      – Call 'listWarehouseInventory' (no arguments).\n" +
+        "      – Present the tool result directly to the worker (it is already formatted as a list).\n" +
+        "  • DO NOT call readLocalPurchaseOrder, findOptimalBin, or updateBinStatus. Lookups are read-only.\n" +
+        "  • DO NOT start the delivery workflow.\n\n" +
+
         "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
 
         "STEP 1 — IDENTIFY THE PRODUCT:\n" +
@@ -330,7 +343,7 @@ public class AIAgent {
             // directly rather than letting the model hallucinate a number.
             if (quantityMissing) {
                 String productLabel = lastArrivingProductId.isEmpty() ? "the product" : lastArrivingProductId;
-                String reply = "Before I check the purchase order — how many units of " + productLabel + " arrived?";
+                String reply = "How many units of " + productLabel + " arrived?";
                 System.out.println("\nZai: " + reply);
                 JsonObject aMsg = new JsonObject();
                 aMsg.addProperty("role", "assistant");
@@ -412,11 +425,34 @@ public class AIAgent {
                     return WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
 
                 case "findOptimalBin":
-                    return WarehouseSkills.findOptimalBin(
-                            args.get("weight").getAsDouble(),
-                            args.get("volume").getAsDouble(),
-                            args.get("velocity").getAsInt(),
-                            args.get("productId").getAsString());
+                    if (lastArrivingQuantity <= 0) {
+                        return TOOL_ERROR_PREFIX +
+                               " QUANTITY_MISSING. Do not find a bin yet. Ask the worker how many units arrived first.";
+                    }
+                    if (lastArrivingProductId.isEmpty()) {
+                        return TOOL_ERROR_PREFIX +
+                               " PRODUCT_MISSING. Call getProductAnalysis (or searchProductByDescription) first.";
+                    }
+                    // Java computes weight/volume/velocity itself from the DB so the model can't
+                    // mis-multiply or echo stale numbers. The args passed in are ignored.
+                    double[] dims = WarehouseSkills.getProductDimensions(lastArrivingProductId);
+                    if (dims == null) {
+                        return TOOL_ERROR_PREFIX + " Product '" + lastArrivingProductId + "' not found in database.";
+                    }
+                    double totalWeight = dims[0] * lastArrivingQuantity;
+                    double totalVolume = dims[1] * lastArrivingQuantity;
+                    int    velocity    = (int) Math.round(dims[2]);
+                    System.out.println("[SYSTEM] computed totals: " + lastArrivingQuantity + " x "
+                            + lastArrivingProductId + " => " + totalWeight + "kg, " + totalVolume
+                            + "m3, velocity=" + velocity);
+                    return WarehouseSkills.findOptimalBin(totalWeight, totalVolume, velocity, lastArrivingProductId);
+
+                case "listWarehouseInventory":
+                    return WarehouseSkills.listWarehouseInventory();
+
+                case "findProductLocation":
+                    return WarehouseSkills.findProductLocation(
+                            args.get("productId").getAsString().toUpperCase());
 
                 case "searchProductByDescription":
                     String searchResult = WarehouseSkills.searchProductByDescription(args.get("keyword").getAsString());
@@ -509,6 +545,17 @@ public class AIAgent {
         return false;
     }
 
+    // A lone token like "K15VC" or "PHL-9W-D" — no verb, no context. Ambiguous intent:
+    // could be a description lookup, a location lookup, or a new shipment. Ask first.
+    private static final Pattern BARE_PRODUCT_ID = Pattern.compile("^[A-Za-z][A-Za-z0-9-]{2,19}$");
+
+    private static boolean isBareProductId(String input) {
+        String trimmed = input.trim();
+        if (!BARE_PRODUCT_ID.matcher(trimmed).matches()) return false;
+        // Must contain at least one digit — rules out bare words like "hello" or "done".
+        return trimmed.matches(".*\\d.*");
+    }
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
         System.out.println("==============================================");
@@ -533,6 +580,23 @@ public class AIAgent {
                 JsonObject aMsg = new JsonObject();
                 aMsg.addProperty("role", "assistant");
                 aMsg.addProperty("content", greetReply);
+                conversationHistory.add(aMsg);
+                continue;
+            }
+
+            if (isBareProductId(userInput)) {
+                String pid = userInput.trim().toUpperCase();
+                String reply = "For " + pid + " — do you want (a) the product description, "
+                             + "(b) its current location in the warehouse, or "
+                             + "(c) to report new stock that just arrived?";
+                System.out.println("\nZai: " + reply);
+                JsonObject uMsg = new JsonObject();
+                uMsg.addProperty("role", "user");
+                uMsg.addProperty("content", userInput);
+                conversationHistory.add(uMsg);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
                 conversationHistory.add(aMsg);
                 continue;
             }

@@ -61,6 +61,31 @@
   {
     "type": "function",
     "function": {
+      "name": "listWarehouseInventory",
+      "description": "Lists EVERY product currently stored in the warehouse along with the bins they occupy. Use this when the worker asks for the full inventory (e.g. 'what do we have?', 'list everything', 'show inventory'). Takes no arguments.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "findProductLocation",
+      "description": "Use this when the worker asks WHERE a product is currently stored (e.g., 'where is K15VC?', 'location of ceiling fan'). Returns every bin holding that product. Do NOT use for the delivery workflow.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "productId": { "type": "string", "description": "The exact product ID, e.g., 'K15VC'." }
+        },
+        "required": ["productId"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "updateBinStatus",
       "description": "Use this to update the database AFTER a worker places items in a bin. It records the new status and the exact Product ID inside the bin.",
       "parameters": {

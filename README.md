@@ -28,7 +28,7 @@ Aisles contain multiple **Shelves** (or Racks).
 Shelves contain individual **Bins** (or Slots).
   
 - **binAdd** :  
-bin_id: (e.g., **"ZH-A4-S2-B12"** for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
+bin_id: (e.g., **"ZH-A4-S2-L2-B12"** for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
 status: (e.g., "Empty", "Partially Full", "Full")  
 max_weight_capacity: 100kg  
 current_weight: 40kg  
