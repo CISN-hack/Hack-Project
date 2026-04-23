@@ -44,8 +44,11 @@ public class AIAgent {
         "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
 
         "STEP 1 — IDENTIFY THE PRODUCT:\n" +
+        "  • A deterministic pre-screen runs before you see the message: if the worker said only that stock/a lorry/a delivery arrived with NO product specified, Java already replied asking for the product — you will receive the product name or ID in the next message.\n" +
         "  • If the worker gave a product ID (e.g. 'K15VC'), call 'getProductAnalysis' with that ID.\n" +
-        "  • If the worker described a product by name (e.g. 'ceiling fan'), call 'searchProductByDescription' first to find the ID, then call 'getProductAnalysis' with the result.\n" +
+        "  • If the worker described a product by name (e.g. 'ceiling fan'), call 'searchProductByDescription' first.\n" +
+        "  • If 'searchProductByDescription' returns EXACTLY ONE product, call 'getProductAnalysis' with that ID immediately.\n" +
+        "  • If 'searchProductByDescription' returns MORE THAN ONE product, list all results to the worker and ask which one arrived. STOP — do NOT call 'getProductAnalysis' until the worker picks one.\n" +
         "  • Do NOT proceed until you have a confirmed product ID.\n\n" +
 
         "STEP 1b — GET ARRIVING QUANTITY:\n" +
@@ -82,8 +85,15 @@ public class AIAgent {
 
     private static String lastArrivingProductId = "";
     private static int lastArrivingQuantity = -1;
+    private static boolean awaitingArrivalProduct = false;
+    private static String pendingBareProductId = "";
 
     private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
+    private static final Pattern ARRIVAL_SIGNAL = Pattern.compile(
+        "\\b(lorry|lorries|truck|trucks|deliver(?:y|ies|ed)|shipment|arrived|arrival|cargo|received|incoming|unloaded|dispatched)\\b",
+        Pattern.CASE_INSENSITIVE);
+    // Matches tokens that look like a product code (letters + at least one digit), e.g. K15VC, PHL-9W-D
+    private static final Pattern PRODUCT_CODE_IN_MSG = Pattern.compile("\\b[A-Za-z]{1,4}\\d[A-Za-z0-9-]*\\b");
 
     // Extract a bare integer from the worker's message (e.g. "a lorry of 50 K15VC" -> 50).
     // Word-boundary anchors mean embedded digits like "15" inside "K15VC" are ignored.
@@ -459,10 +469,19 @@ public class AIAgent {
                     Matcher m = Pattern
                         .compile("(?i)(?:product[:\\s]+|id[:\\s]+)([A-Z0-9][A-Z0-9\\-]{1,14})")
                         .matcher(searchResult);
-                    if (m.find()) {
-                        lastArrivingProductId = m.group(1).toUpperCase();
+                    String firstId = null;
+                    int matchCount = 0;
+                    while (m.find()) {
+                        matchCount++;
+                        if (firstId == null) firstId = m.group(1).toUpperCase();
+                    }
+                    if (matchCount == 1 && firstId != null) {
+                        // Unambiguous single result — auto-select so the LLM doesn't need to repeat itself
+                        lastArrivingProductId = firstId;
                         System.out.println("[SYSTEM] AI resolved product ID via search: " + lastArrivingProductId);
                     }
+                    // Multiple results: do NOT set lastArrivingProductId — the LLM must list the
+                    // options and wait for the worker to pick one before calling getProductAnalysis.
                     return searchResult;
 
                 case "updateBinStatus":
@@ -556,6 +575,13 @@ public class AIAgent {
         return trimmed.matches(".*\\d.*");
     }
 
+    // Returns true when the worker signals a stock arrival but names no specific product.
+    // "A lorry arrived" or "delivery came in" triggers this; "lorry of K15VC arrived" does not
+    // because PRODUCT_CODE_IN_MSG matches "K15VC".
+    private static boolean isGenericArrival(String input) {
+        return ARRIVAL_SIGNAL.matcher(input).find() && !PRODUCT_CODE_IN_MSG.matcher(input).find();
+    }
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
         System.out.println("==============================================");
@@ -569,6 +595,88 @@ public class AIAgent {
             if (userInput.isEmpty()) continue;
 
             tryUpdateArrivingQuantity(userInput);
+
+            // ── ARRIVAL PRODUCT LOOKUP ──────────────────────────────────────────────
+            // Fired after isGenericArrival asked "what product?". Bypasses the bare-product-ID
+            // disambiguation menu and does a direct DB lookup instead.
+            if (awaitingArrivalProduct) {
+                String input = userInput.trim();
+                String pid   = input.toUpperCase();
+                String reply;
+                String analysis = WarehouseSkills.getProductAnalysis(pid);
+                if (!"Product not found.".equals(analysis)) {
+                    lastArrivingProductId = pid;
+                    awaitingArrivalProduct = false;
+                    String productLabel = pid;
+                    if (analysis.startsWith("Product: ")) {
+                        int comma = analysis.indexOf(",");
+                        if (comma > 9) productLabel = analysis.substring(9, comma).trim();
+                    }
+                    reply = "Found: " + analysis + ". How many units of " + productLabel + " arrived?";
+                } else {
+                    String searchResult = WarehouseSkills.searchProductByDescription(input);
+                    if (searchResult.startsWith("No products found")) {
+                        reply = "\"" + input + "\" was not found in the system. Please check the product ID or name and try again.";
+                    } else {
+                        Matcher sm = Pattern
+                            .compile("(?i)(?:id[:\\s]+)([A-Z0-9][A-Z0-9\\-]{1,14})")
+                            .matcher(searchResult);
+                        String sFirstId = null; int sCount = 0;
+                        while (sm.find()) { sCount++; if (sFirstId == null) sFirstId = sm.group(1).toUpperCase(); }
+                        if (sCount == 1 && sFirstId != null) {
+                            lastArrivingProductId = sFirstId;
+                            awaitingArrivalProduct = false;
+                            String detail = WarehouseSkills.getProductAnalysis(sFirstId);
+                            String productLabel = sFirstId;
+                            if (detail.startsWith("Product: ")) {
+                                int comma = detail.indexOf(",");
+                                if (comma > 9) productLabel = detail.substring(9, comma).trim();
+                            }
+                            reply = "Found: " + detail + ". How many units of " + productLabel + " arrived?";
+                        } else if (sCount > 1) {
+                            reply = "I found multiple products matching \"" + input + "\":\n"
+                                  + searchResult + "Please give me the exact product ID or a more specific name.";
+                        } else {
+                            reply = "\"" + input + "\" was not found in the system. Please check the product ID or name and try again.";
+                        }
+                    }
+                }
+                System.out.println("\nZai: " + reply);
+                JsonObject uMsg = new JsonObject(); uMsg.addProperty("role", "user"); uMsg.addProperty("content", userInput); conversationHistory.add(uMsg);
+                JsonObject aMsg = new JsonObject(); aMsg.addProperty("role", "assistant"); aMsg.addProperty("content", reply); conversationHistory.add(aMsg);
+                continue;
+            }
+
+            // ── BARE-PRODUCT-ID DISAMBIGUATION (a/b/c response) ────────────────────
+            if (!pendingBareProductId.isEmpty()) {
+                String pid = pendingBareProductId;
+                String stripped = userInput.trim().toLowerCase().replaceAll("[^a-z]", "");
+                char choice = stripped.isEmpty() ? ' ' : stripped.charAt(0);
+                if (choice == 'a' || choice == 'b' || choice == 'c') {
+                    String reply;
+                    if (choice == 'a') {
+                        reply = "Details for " + pid + ": " + WarehouseSkills.getProductAnalysis(pid);
+                    } else if (choice == 'b') {
+                        reply = WarehouseSkills.findProductLocation(pid);
+                    } else {
+                        lastArrivingProductId = pid;
+                        String analysis = WarehouseSkills.getProductAnalysis(pid);
+                        String productLabel = pid;
+                        if (analysis.startsWith("Product: ")) { int c = analysis.indexOf(","); if (c > 9) productLabel = analysis.substring(9, c).trim(); }
+                        JsonObject sysMsg = new JsonObject();
+                        sysMsg.addProperty("role", "user");
+                        sysMsg.addProperty("content", "[SYSTEM DELIVERY STARTED] Product " + pid + " identified. " + analysis + ". STEP 1 complete — proceed from STEP 1b (ask for quantity only).");
+                        conversationHistory.add(sysMsg);
+                        reply = "Got it — how many units of " + productLabel + " arrived?";
+                    }
+                    pendingBareProductId = "";
+                    System.out.println("\nZai: " + reply);
+                    JsonObject uMsg = new JsonObject(); uMsg.addProperty("role", "user"); uMsg.addProperty("content", userInput); conversationHistory.add(uMsg);
+                    JsonObject aMsg = new JsonObject(); aMsg.addProperty("role", "assistant"); aMsg.addProperty("content", reply); conversationHistory.add(aMsg);
+                    continue;
+                }
+                pendingBareProductId = ""; // unrecognised — drop menu state and fall through
+            }
 
             if (isGreeting(userInput)) {
                 String greetReply = "Hey! I'm Zai, your warehouse intelligence system. Ready to help!";
@@ -586,9 +694,33 @@ public class AIAgent {
 
             if (isBareProductId(userInput)) {
                 String pid = userInput.trim().toUpperCase();
-                String reply = "For " + pid + " — do you want (a) the product description, "
-                             + "(b) its current location in the warehouse, or "
-                             + "(c) to report new stock that just arrived?";
+                // Check the DB immediately — never show a menu for a product that doesn't exist
+                String analysis = WarehouseSkills.getProductAnalysis(pid);
+                String reply;
+                if ("Product not found.".equals(analysis)) {
+                    reply = "Product ID \"" + pid + "\" was not found in the system. Please verify the product ID and try again.";
+                } else {
+                    // Product exists — show menu and remember which product we're asking about
+                    pendingBareProductId = pid;
+                    reply = "Found " + pid + ". Do you want (a) the product description, "
+                          + "(b) its current location in the warehouse, or "
+                          + "(c) to report new stock that just arrived?";
+                }
+                System.out.println("\nZai: " + reply);
+                JsonObject uMsg = new JsonObject();
+                uMsg.addProperty("role", "user");
+                uMsg.addProperty("content", userInput);
+                conversationHistory.add(uMsg);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", reply);
+                conversationHistory.add(aMsg);
+                continue;
+            }
+
+            if (isGenericArrival(userInput) && lastArrivingProductId.isEmpty()) {
+                awaitingArrivalProduct = true;
+                String reply = "Got it — what is the product ID or name of the stock that arrived?";
                 System.out.println("\nZai: " + reply);
                 JsonObject uMsg = new JsonObject();
                 uMsg.addProperty("role", "user");

@@ -15,7 +15,7 @@ Windows/bash (paths use `;` as classpath separator):
 javac -cp "lib/*" src/*.java
 
 # Run the interactive agent (requires tools.Json and warehouse_demo.db in cwd)
-java -cp "lib/*;src" AIAgent
+java --enable-native-access=ALL-UNNAMED -cp "lib/*;src" AIAgent
 
 # Rebuild the SQLite schema + seed data (run these from the project root; each drops/recreates its table)
 java -cp "lib/*;src" WarehouseDatabaseSetup
@@ -38,6 +38,30 @@ There is no build system, no linter, no test runner. Compiled `.class` files liv
 
 `getToolsJson()` reads `tools.json` at runtime — Windows' case-insensitive FS makes this work despite the on-disk filename being `tools.Json`. Don't rename either side without fixing the other. The schemas are sent to the model unchanged; adding a tool means editing both `tools.Json` and the `switch` in `AIAgent.dispatchTool`.
 
+The ten registered tools are: `readLocalPurchaseOrder`, `getProductAnalysis`, `findOptimalBin`, `searchProductByDescription`, `listWarehouseInventory`, `findProductLocation`, `updateBinStatus`, `reportAccident`, `clearAisle`, `startBatchDelivery`. The first five are read-only; `updateBinStatus`, `reportAccident`, `clearAisle` mutate state; 
+
+### System instruction protocols
+
+`SYSTEM_INSTRUCTION` at the top of `AIAgent.java` defines five named protocols the model follows:
+
+- **PROTOCOL OMEGA** — emergency/accident response; triggers `reportAccident` and halts further tool calls.
+- **PROTOCOL CLEAR** — aisle reopening; triggers `clearAisle` as a terminal one-shot.
+- **PROTOCOL QUERY** — read-only inventory lookups (`listWarehouseInventory`, `findProductLocation`); no writes permitted.
+- **PROTOCOL BATCH** — batch delivery entry point; triggers `startBatchDelivery`, which parses the PO and loads all items into `batchQueue`. Java then drives sequencing automatically via `advanceBatch()`.
+- **DELIVERY WORKFLOW** — the main 5-step guided process: identify product → confirm quantity → check PO → find optimal bin → instruct worker → wait for confirmation → commit via `updateBinStatus`.
+
+If the Java guards are changed, update `SYSTEM_INSTRUCTION` to match.
+
+### `findOptimalBin` SQL logic
+
+The optimal bin query in `WarehouseSkills` scores bins by sales velocity tier:
+
+- Monthly sales ≥ 80 units → target `accessibility_score = 5` (level L1, most reachable)
+- Monthly sales ≥ 30 units → target `accessibility_score = 3` (level L2)
+- Below 30 → target `accessibility_score = 1` (level L3, deepest)
+
+Within the tier, SQL ordering prefers: `Half` bins first (consolidation), same-product match, ascending actual `accessibility_score`. Weight and volume caps are checked against existing bin contents via a JOIN to the Products table.
+
 ### Deterministic overrides of the model
 
 Several behaviors are enforced in Java rather than trusting the LLM:
@@ -53,6 +77,8 @@ If you change any of these guards, also update `SYSTEM_INSTRUCTION` at the top o
 ### State between turns
 
 Two statics hold cross-turn state: `lastArrivingProductId` (set by `getProductAnalysis` / `searchProductByDescription` regex) and `lastArrivingQuantity`. Both are reset to sentinel values after `updateBinStatus` or `reportAccident` succeeds — this is how the agent "finishes a task" and is willing to accept a new one.
+
+Three additional statics manage batch mode: `batchQueue` (a `LinkedList<BatchItem>` of remaining PO items), `batchTotalItems` (count at batch start, never decremented), and `batchItemIndex` (1-based index of the item currently being processed). All three are set by `startBatchDelivery` and advanced by `advanceBatch()`, which is called from `processAIResponse` after `updateBinStatus` succeeds in batch mode. `advanceBatch()` injects either a `[BATCH NEXT ITEM]` or `[BATCH COMPLETE]` user-role system message into the history, which the model acts on immediately in the next recursive call. `workerJustConfirmed()` treats `[batch...]` messages as a hard stop (returns false) rather than skipping, ensuring each item's confirmation is not re-used for the next item.
 
 ### Modules
 
