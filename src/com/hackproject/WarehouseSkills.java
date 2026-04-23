@@ -139,22 +139,22 @@ public class WarehouseSkills {
             "LEFT JOIN Products p2 ON b.Product2 = p2.product_id " +
             "WHERE b.status IN ('Empty', 'Half') " +
             "AND b.blocked_status = 'Clear' " +
+            "AND b.accessibility_score >= ? " +
             "AND (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) >= ? " +
             "AND (b.max_volume_m3      - COALESCE(p1.volume_m3, 0) - COALESCE(p2.volume_m3, 0)) >= ? " +
             "ORDER BY " +
             "  CASE WHEN b.status = 'Half' THEN 0 ELSE 1 END, " +
             "  CASE WHEN b.Product1 = ? OR b.Product2 = ? THEN 0 ELSE 1 END, " +
-            "  CASE WHEN b.accessibility_score >= ? THEN 0 ELSE 1 END, " +
             "  b.accessibility_score ASC " +
             "LIMIT 1";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setDouble(1, weight);
-            pstmt.setDouble(2, volume);
-            pstmt.setString(3, productId);
+            pstmt.setInt(1, targetAccess);
+            pstmt.setDouble(2, weight);
+            pstmt.setDouble(3, volume);
             pstmt.setString(4, productId);
-            pstmt.setInt(5, targetAccess);
+            pstmt.setString(5, productId);
 
             ResultSet rs = pstmt.executeQuery();
             return rs.next() ? rs.getString("bin_id") : "CRITICAL ALERT: Warehouse is physically full! No bins available.";
