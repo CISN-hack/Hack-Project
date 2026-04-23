@@ -91,6 +91,9 @@ public class AIAgent {
     private static boolean allToPackingCounter = false; // true when PO match covers all arriving units
 
     private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
+    private static final Pattern EMERGENCY_KEYWORDS = Pattern.compile(
+        "\\b(accident|accidental|broke|broken|fire|smoke|injury|injured|hurt|pain|spill|leak|block|blocked|aisle|machine|forklift|fall|fell|fallen|emergency|danger|dangerous|collapse|stuck|trapped|flood|damage|damaged|crash|crashed|explosion|explode)\\b",
+        Pattern.CASE_INSENSITIVE);
     private static final Pattern ARRIVAL_SIGNAL = Pattern.compile(
         "\\b(lorry|lorries|truck|trucks|deliver(?:y|ies|ed)|shipment|arrived|arrival|cargo|received|incoming|unloaded|dispatched)\\b",
         Pattern.CASE_INSENSITIVE);
@@ -540,6 +543,11 @@ public class AIAgent {
                     return binResult;
 
                 case "reportAccident":
+                    if (!recentMessageContainsEmergencyKeyword()) {
+                        return TOOL_ERROR_PREFIX +
+                               " reportAccident BLOCKED. No emergency keywords found in the worker's message. " +
+                               "Do not fabricate emergencies. Ask the worker to describe what happened.";
+                    }
                     String accidentResult = WarehouseSkills.reportAccident(
                             args.get("location").getAsString(),
                             args.get("description").getAsString());
@@ -574,12 +582,26 @@ public class AIAgent {
         return null;
     }
 
+    private static boolean recentMessageContainsEmergencyKeyword() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !msg.has("content")) continue;
+            if ("user".equals(msg.get("role").getAsString())) {
+                String content = msg.get("content").getAsString();
+                if (content.startsWith("[SYSTEM")) continue;
+                return EMERGENCY_KEYWORDS.matcher(content).find();
+            }
+        }
+        return false;
+    }
+
     private static boolean workerJustConfirmed() {
         for (int i = conversationHistory.size() - 1; i >= 0; i--) {
             JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !msg.has("content")) continue;
             if ("user".equals(msg.get("role").getAsString())) {
                 String content = msg.get("content").getAsString().toLowerCase();
-                if (content.startsWith("[system")) continue; // skip injected PO check messages
+                if (content.startsWith("[system")) continue;
                 return content.contains("done")
                     || content.contains("placed")
                     || content.contains("confirmed")
@@ -633,6 +655,18 @@ public class AIAgent {
             String userInput = scanner.nextLine().trim();
             if (userInput.equalsIgnoreCase("exit")) break;
             if (userInput.isEmpty()) continue;
+
+            if (userInput.equalsIgnoreCase("cancel") || userInput.equalsIgnoreCase("reset")) {
+                lastArrivingProductId  = "";
+                lastArrivingQuantity   = -1;
+                poCheckDone            = false;
+                allToPackingCounter    = false;
+                awaitingArrivalProduct = false;
+                pendingBareProductId   = "";
+                while (conversationHistory.size() > 0) conversationHistory.remove(0);
+                System.out.println("\nZai: Workflow cancelled. Ready for a new task.");
+                continue;
+            }
 
             tryUpdateArrivingQuantity(userInput);
 
