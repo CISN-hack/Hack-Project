@@ -4,6 +4,7 @@ import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.List;
 import com.google.gson.JsonObject;
 import java.io.IOException;
 
@@ -123,41 +124,68 @@ public class WarehouseSkills {
     // based on the status of bins (half empty or fully empty), blocked_status (must be 'Clear'), and accessibility_score (must meet or exceed threshold based on velocity)
     // prioritizes bins that already contain the same product (Product1 or Product2) to optimize for picking efficiency
     // prioritiZes Half bins over Empty bins to maximize space utilization, but only if they meet the weight/volume requirements after accounting for existing contents
-    public static String findOptimalBin(double weight, double volume, int velocity, String productId) {
+    public static String findOptimalBin(double unitWeight, double unitVolume, int velocity, String productId, int remainingQty, List<String> excludedBins) {
         int targetAccess;
         if (velocity >= 80) targetAccess = 5;
         else if (velocity >= 30) targetAccess = 3;
         else targetAccess = 1;
 
-        // Join Products twice so remaining capacity reflects what is actually sitting in
-        // the bin — the old "Half == 50% free" approximation was wrong in both directions
-        // (too strict for a bulb, too lenient for a water heater).
-        // Order: Half first (consolidation), then same-product match, then accessibility tier.
+        String exclusionClause = "";
+        if (excludedBins != null && !excludedBins.isEmpty()) {
+            StringBuilder sb = new StringBuilder("AND b.bin_id NOT IN (");
+            for (int i = 0; i < excludedBins.size(); i++) {
+                sb.append(i == 0 ? "?" : ",?");
+            }
+            sb.append(") ");
+            exclusionClause = sb.toString();
+        }
+
         String sql =
-            "SELECT b.bin_id FROM Bins b " +
+            "SELECT b.bin_id, " +
+            "  (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) AS rem_weight, " +
+            "  (b.max_volume_m3       - COALESCE(p1.volume_m3,  0) - COALESCE(p2.volume_m3,  0)) AS rem_volume " +
+            "FROM Bins b " +
             "LEFT JOIN Products p1 ON b.Product1 = p1.product_id " +
             "LEFT JOIN Products p2 ON b.Product2 = p2.product_id " +
             "WHERE b.status IN ('Empty', 'Half') " +
             "AND b.blocked_status = 'Clear' " +
+            "AND b.accessibility_score >= ? " +
             "AND (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) >= ? " +
-            "AND (b.max_volume_m3      - COALESCE(p1.volume_m3, 0) - COALESCE(p2.volume_m3, 0)) >= ? " +
+            "AND (b.max_volume_m3       - COALESCE(p1.volume_m3,  0) - COALESCE(p2.volume_m3,  0)) >= ? " +
+            exclusionClause +
             "ORDER BY " +
             "  CASE WHEN b.status = 'Half' THEN 0 ELSE 1 END, " +
             "  CASE WHEN b.Product1 = ? OR b.Product2 = ? THEN 0 ELSE 1 END, " +
-            "  CASE WHEN b.accessibility_score >= ? THEN 0 ELSE 1 END, " +
             "  b.accessibility_score ASC " +
             "LIMIT 1";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
-            pstmt.setDouble(1, weight);
-            pstmt.setDouble(2, volume);
-            pstmt.setString(3, productId);
-            pstmt.setString(4, productId);
-            pstmt.setInt(5, targetAccess);
+            int p = 1;
+            pstmt.setInt(p++, targetAccess);
+            pstmt.setDouble(p++, unitWeight);
+            pstmt.setDouble(p++, unitVolume);
+            if (excludedBins != null) {
+                for (String bin : excludedBins) pstmt.setString(p++, bin);
+            }
+            pstmt.setString(p++, productId);
+            pstmt.setString(p,   productId);
 
             ResultSet rs = pstmt.executeQuery();
-            return rs.next() ? rs.getString("bin_id") : "CRITICAL ALERT: Warehouse is physically full! No bins available.";
+            if (!rs.next()) {
+                return "CRITICAL ALERT: Warehouse is physically full! No bins available.";
+            }
+
+            String binId     = rs.getString("bin_id");
+            double remWeight = rs.getDouble("rem_weight");
+            double remVolume = rs.getDouble("rem_volume");
+
+            int fitByWeight = (int) Math.floor(remWeight / unitWeight);
+            int fitByVolume = (int) Math.floor(remVolume / unitVolume);
+            int unitsInBin  = Math.min(remainingQty, Math.min(fitByWeight, fitByVolume));
+            int remainder   = remainingQty - unitsInBin;
+
+            return "BINASSIGN|" + binId + "|" + unitsInBin + "|" + remainder;
 
         } catch (SQLException e) {
             return "Database search error: " + e.getMessage();

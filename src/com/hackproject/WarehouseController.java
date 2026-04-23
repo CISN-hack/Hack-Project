@@ -3,6 +3,7 @@ package com.hackproject;
 import io.javalin.Javalin;
 import java.util.Map;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 public class WarehouseController {
     public static void main(String[] args) {
@@ -15,7 +16,26 @@ public class WarehouseController {
             });
         }).start(8080);
 
+<<<<<<< HEAD
         // 2. Inventory Data (for Grid & Capacity tabs)
+=======
+        // This replaces your @PostMapping("/chat")
+        app.post("/api/chat", ctx -> {
+            // 1. Get the message from Frontend
+            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
+            String userMessage = request.get("message");
+
+            System.out.println("Received message from Frontend: " + userMessage);
+
+            // 2. Get AI Response
+            String aiReply = AIAgent.getAIResponseForWeb(userMessage);
+
+            // 3. Send back as JSON
+            ctx.json(Map.of("reply", aiReply));
+        });
+        
+        // This sends the bin occupancy data to your "Grid" and "Capacity" tabs
+>>>>>>> 5422cc5121f3cfaa282ae9e7d4301b42aa9425e8
         app.get("/api/inventory", ctx -> {
             ctx.json(DatabaseManager.getInventoryData());
         });

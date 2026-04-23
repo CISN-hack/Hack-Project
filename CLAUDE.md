@@ -4,29 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"Zai" — a Java CLI warehouse assistant that calls an LLM (Nvidia-hosted `meta/llama-3.3-70b-instruct`) with OpenAI-style tool calling. It reasons over an SQLite "digital twin" of a warehouse (Products, Sales, Bins) plus a purchase-order CSV, tells the worker where to put arriving stock, and notifies managers via Telegram on emergencies.
+"Zai" — a Java CLI warehouse assistant that calls an LLM (Nvidia-hosted `meta/llama-3.3-70b-instruct`) with OpenAI-style tool calling. It reasons over an SQLite "digital twin" of a warehouse (Products, Sales, Bins) plus a customer-order CSV, tells the worker where to put arriving stock, and notifies managers via Telegram on emergencies.
 
 ## Commands
 
-Windows/bash (paths use `;` as classpath separator):
+All sources are in the `com.hackproject` package. Windows/bash (paths use `;` as classpath separator):
 
 ```bash
-# Compile all sources
-javac -cp "lib/*" src/*.java
+# Compile all sources into bin/
+javac -d bin -cp "lib/*" src/com/hackproject/*.java
 
-# Run the interactive agent (requires tools.Json and warehouse_demo.db in cwd)
-java --enable-native-access=ALL-UNNAMED -cp "lib/*;src" AIAgent
+# Run the interactive agent (requires tools.json, CO_April20.csv, and warehouse_demo.db in cwd)
+java --enable-native-access=ALL-UNNAMED -cp "lib/*;bin" com.hackproject.AIAgent
 
 # Rebuild the SQLite schema + seed data (run these from the project root; each drops/recreates its table)
-java -cp "lib/*;src" WarehouseDatabaseSetup
-java -cp "lib/*;src" BinDatabaseSetup
-java -cp "lib/*;src" ProductDatabaseSetup
-java -cp "lib/*;src" SalesDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.WarehouseDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.BinDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.ProductDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.SalesDatabaseSetup
 ```
 
 Linux/macOS: replace `;` with `:` in the classpath.
 
-There is no build system, no linter, no test runner. Compiled `.class` files live alongside `.java` in `src/` and are gitignored.
+There is no build system, no linter, no test runner. Compiled `.class` files go to `bin/` and are gitignored. Delete stray `.class` files from the old default-package layout (e.g. `src/*.class`, `out/*.class`, project-root `*.class`) if you see them — running with `-cp src` against the old bare-`AIAgent` class will silently load the pre-rename build.
 
 ## Architecture
 
@@ -34,11 +34,11 @@ There is no build system, no linter, no test runner. Compiled `.class` files liv
 
 `AIAgent.main` is a REPL that appends each worker message to `conversationHistory` (a `JsonArray`) and calls `callAPI` → `processAIResponse`. The assistant reply can be text (printed and stored) or `tool_calls`, which are dispatched by `dispatchTool` and followed by a recursive `processAIResponse` call. Recursion is bounded by `MAX_DEPTH = 8`; when hit, the next call sets `allowTools = false` to force a text reply.
 
-### Tool schemas live in `tools.Json` (note capital J)
+### Tool schemas live in `tools.json`
 
-`getToolsJson()` reads `tools.json` at runtime — Windows' case-insensitive FS makes this work despite the on-disk filename being `tools.Json`. Don't rename either side without fixing the other. The schemas are sent to the model unchanged; adding a tool means editing both `tools.Json` and the `switch` in `AIAgent.dispatchTool`.
+`getToolsJson()` reads `tools.json` at runtime. The schemas are sent to the model unchanged; adding a tool means editing both `tools.json` and the `switch` in `AIAgent.dispatchTool`.
 
-The ten registered tools are: `readLocalPurchaseOrder`, `getProductAnalysis`, `findOptimalBin`, `searchProductByDescription`, `listWarehouseInventory`, `findProductLocation`, `updateBinStatus`, `reportAccident`, `clearAisle`, `startBatchDelivery`. The first five are read-only; `updateBinStatus`, `reportAccident`, `clearAisle` mutate state; 
+The nine registered tools are: `readLocalCustomerOrder`, `getProductAnalysis`, `findOptimalBin`, `searchProductByDescription`, `listWarehouseInventory`, `findProductLocation`, `updateBinStatus`, `reportAccident`, `clearAisle`. The first six are read-only; `updateBinStatus`, `reportAccident`, `clearAisle` mutate state.
 
 ### System instruction protocols
 
@@ -66,8 +66,8 @@ Within the tier, SQL ordering prefers: `Half` bins first (consolidation), same-p
 
 Several behaviors are enforced in Java rather than trusting the LLM:
 
-- **PO matching** (`buildPoMatchMessage`): after `readLocalPurchaseOrder` returns, the code parses the CSV itself, finds the row matching `lastArrivingProductId`, and injects a synthetic `role: user` message starting with `[SYSTEM PO CHECK]` into the history. The model is instructed to route based on that injected message. Do not move this logic into the prompt.
-- **Arrival quantity gate**: `readLocalPurchaseOrder` refuses to run until `lastArrivingQuantity > 0`. When the guard trips (`QUANTITY_MISSING`), `processAIResponse` short-circuits and emits a direct question to the worker instead of recursing.
+- **CO matching** (`buildPoMatchMessage`): after `readLocalCustomerOrder` returns, the code parses the CSV itself, finds the row matching `lastArrivingProductId`, and injects a synthetic `role: user` message starting with `[CO MATCH FOUND]` or `[NO CO MATCH]` into the history. The model is instructed to route based on that injected message. Do not move this logic into the prompt. (The helper is still named `buildPoMatchMessage` from the pre-rename days — rename if you touch it, but it's not load-bearing.)
+- **Arrival quantity gate**: `readLocalCustomerOrder` refuses to run until `lastArrivingQuantity > 0`. When the guard trips (`QUANTITY_MISSING`), `processAIResponse` short-circuits and emits a direct question to the worker instead of recursing.
 - **Confirmation gate**: `updateBinStatus` is rejected unless `workerJustConfirmed()` finds `done`/`placed`/`confirmed`/`ok`/`yes` in the most recent real user message (injected `[SYSTEM ...]` messages are skipped). If blocked, the code emits a direct "reply 'done' when placed" message using `findLastBinId()` to pull the bin ID out of recent tool outputs.
 - **Terminal one-shots**: `reportAccident` and `clearAisle` stop the tool-call chain after one successful call and emit a canned reassurance, preventing the model from re-reporting.
 - **Quantity extraction**: every worker turn runs `tryUpdateArrivingQuantity` — a regex that picks standalone integers (word-boundary anchored so `K15VC` is ignored) and stores the result in `lastArrivingQuantity`.
