@@ -5,10 +5,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.Map;
-import java.util.Scanner;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.Scanner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Files;
@@ -105,6 +103,9 @@ public class AIAgent {
     private static String pendingBareProductId    = "";
     private static boolean poCheckDone            = false;
     private static boolean allToPackingCounter    = false;
+    private static int     remainingQtyToBin      = 0;
+    private static final List<String> tentativeBins = new ArrayList<>();
+    private static int     pendingUpdateCount     = 0;
     // True whenever Zai has just asked the worker for an arriving quantity and is waiting on a reply.
     // Set by the QUANTITY_MISSING handler and the routing-hallucination guard; cleared once the worker
     // answers with a number, at which point we inject a [SYSTEM QUANTITY RECEIVED] nudge to resume
@@ -397,7 +398,7 @@ public class AIAgent {
                         WarehouseSkills.notifyCoArrival(lastArrivingProductId, customer, coQty, priority, lastArrivingQuantity);
                         lastPoCustomer = customer;
 
-                        // Detect "all to Packing Counter" case: arriving qty <= CO qty means no binning
+                        // Detect "all to Packing Counter" vs split-delivery case
                         try {
                             int coQtyNum = Integer.parseInt(coQty.replaceAll("[^0-9]", ""));
                             if (lastArrivingQuantity <= coQtyNum) {
@@ -409,6 +410,17 @@ public class AIAgent {
                                     + customer + ". Do NOT call findOptimalBin or updateBinStatus. "
                                     + "Tell the worker to take all units to the Packing Counter and reply 'done'. No further tool calls are needed.");
                                 conversationHistory.add(packMsg);
+                            } else {
+                                int binQty = lastArrivingQuantity - coQtyNum;
+                                remainingQtyToBin = binQty;
+                                JsonObject splitMsg = new JsonObject();
+                                splitMsg.addProperty("role", "user");
+                                splitMsg.addProperty("content",
+                                    "[SYSTEM SPLIT DELIVERY] Send exactly " + coQtyNum + " units to the Packing Counter for "
+                                    + customer + " (" + priority + " priority). "
+                                    + "Bin the remaining " + binQty + " units — call findOptimalBin now to get the bin locations. "
+                                    + "Do NOT bin more than " + binQty + " units.");
+                                conversationHistory.add(splitMsg);
                             }
                         } catch (NumberFormatException ignored) {}
                     }
@@ -549,13 +561,40 @@ public class AIAgent {
                     if (dims == null) {
                         return TOOL_ERROR_PREFIX + " Product '" + lastArrivingProductId + "' not found in database.";
                     }
-                    double totalWeight = dims[0] * lastArrivingQuantity;
-                    double totalVolume = dims[1] * lastArrivingQuantity;
-                    int    velocity    = (int) Math.round(dims[2]);
-                    System.out.println("[SYSTEM] computed totals: " + lastArrivingQuantity + " x "
-                            + lastArrivingProductId + " => " + totalWeight + "kg, " + totalVolume
-                            + "m3, velocity=" + velocity);
-                    return WarehouseSkills.findOptimalBin(totalWeight, totalVolume, velocity, lastArrivingProductId);
+                    double unitWeight = dims[0];
+                    double unitVolume = dims[1];
+                    int    velocity   = (int) Math.round(dims[2]);
+                    if (remainingQtyToBin <= 0) remainingQtyToBin = lastArrivingQuantity;
+                    System.out.println("[SYSTEM] per-unit: " + lastArrivingProductId
+                            + " => " + unitWeight + "kg, " + unitVolume + "m3, velocity=" + velocity
+                            + ", total qty=" + lastArrivingQuantity);
+                    // Loop until all units are assigned or the warehouse runs out of space.
+                    StringBuilder routingPlan = new StringBuilder();
+                    int binsFound = 0;
+                    while (remainingQtyToBin > 0) {
+                        String binRaw = WarehouseSkills.findOptimalBin(unitWeight, unitVolume, velocity, lastArrivingProductId, remainingQtyToBin, tentativeBins);
+                        if (!binRaw.startsWith("BINASSIGN|")) {
+                            if (binsFound == 0) return binRaw; // no bins at all
+                            routingPlan.append(remainingQtyToBin)
+                                       .append(" units could not be binned — warehouse at capacity.");
+                            break;
+                        }
+                        String[] parts    = binRaw.split("\\|");
+                        String assignedBin = parts[1];
+                        int    unitsInBin  = Integer.parseInt(parts[2]);
+                        remainingQtyToBin  = Integer.parseInt(parts[3]);
+                        tentativeBins.add(assignedBin);
+                        binsFound++;
+                        routingPlan.append("Bin ").append(assignedBin)
+                                   .append(": place ").append(unitsInBin).append(" units.\n");
+                    }
+                    pendingUpdateCount = binsFound;
+                    if (binsFound == 1) {
+                        // Single bin — return compact format the model is used to
+                        return routingPlan.toString().trim();
+                    }
+                    return "ROUTING PLAN — " + binsFound + " bins needed:\n" + routingPlan.toString().trim()
+                         + "\nTell the worker all bin locations at once, then call updateBinStatus for each bin after they confirm 'done'.";
 
                 case "listWarehouseInventory":
                     return WarehouseSkills.listWarehouseInventory();
@@ -603,17 +642,22 @@ public class AIAgent {
                         String logName = lastArrivingProductName.isEmpty()
                             ? lastArrivingProductId
                             : lastArrivingProductName + " (" + lastArrivingProductId + ")";
-                        deliveryLog.add("[" + now() + "] " + lastArrivingQuantity + "x " + logName
+                        deliveryLog.add("[" + now() + "] " + logName
                             + " → Bin " + args.get("binId").getAsString());
-                        lastArrivingProductId      = "";
-                        lastArrivingProductName    = "";
-                        lastPoCustomer             = "";
-                        lastArrivingQuantity       = -1;
-                        poCheckDone                = false;
-                        allToPackingCounter        = false;
-                        awaitingArrivalProduct     = false;
-                        pendingBareProductId       = "";
-                        awaitingQuantityFromWorker = false;
+                        pendingUpdateCount = Math.max(0, pendingUpdateCount - 1);
+                        if (pendingUpdateCount <= 0) {
+                            lastArrivingProductId      = "";
+                            lastArrivingProductName    = "";
+                            lastPoCustomer             = "";
+                            lastArrivingQuantity       = -1;
+                            poCheckDone                = false;
+                            allToPackingCounter        = false;
+                            remainingQtyToBin          = 0;
+                            tentativeBins.clear();
+                            awaitingArrivalProduct     = false;
+                            pendingBareProductId       = "";
+                            awaitingQuantityFromWorker = false;
+                        }
                     }
                     return binResult;
 
@@ -634,6 +678,9 @@ public class AIAgent {
                         lastPoCustomer          = "";
                         lastArrivingQuantity    = -1;
                         poCheckDone             = false;
+                        remainingQtyToBin       = 0;
+                        pendingUpdateCount      = 0;
+                        tentativeBins.clear();
                     }
                     return accidentResult;
 
@@ -811,6 +858,9 @@ public class AIAgent {
                 lastArrivingQuantity       = -1;
                 poCheckDone                = false;
                 allToPackingCounter        = false;
+                remainingQtyToBin          = 0;
+                pendingUpdateCount         = 0;
+                tentativeBins.clear();
                 awaitingArrivalProduct     = false;
                 pendingBareProductId       = "";
                 awaitingQuantityFromWorker = false;
@@ -835,6 +885,11 @@ public class AIAgent {
                 if (!"Product not found.".equals(analysis)) {
                     lastArrivingProductId = pid;
                     awaitingArrivalProduct = false;
+                    allToPackingCounter    = false;
+                    poCheckDone            = false;
+                    remainingQtyToBin      = 0;
+                    pendingUpdateCount     = 0;
+                    tentativeBins.clear();
                     String productLabel = pid;
                     if (analysis.startsWith("Product: ")) {
                         int comma = analysis.indexOf(",");
@@ -854,6 +909,11 @@ public class AIAgent {
                         if (sCount == 1 && sFirstId != null) {
                             lastArrivingProductId = sFirstId;
                             awaitingArrivalProduct = false;
+                            allToPackingCounter    = false;
+                            poCheckDone            = false;
+                            remainingQtyToBin      = 0;
+                            pendingUpdateCount     = 0;
+                            tentativeBins.clear();
                             String detail = WarehouseSkills.getProductAnalysis(sFirstId);
                             String productLabel = sFirstId;
                             if (detail.startsWith("Product: ")) {
@@ -887,7 +947,13 @@ public class AIAgent {
                     } else if (choice == 'b') {
                         reply = WarehouseSkills.findProductLocation(pid);
                     } else {
-                        lastArrivingProductId = pid;
+                        lastArrivingProductId  = pid;
+                        allToPackingCounter    = false;
+                        poCheckDone            = false;
+                        remainingQtyToBin      = 0;
+                        pendingUpdateCount     = 0;
+                        tentativeBins.clear();
+                        lastArrivingQuantity   = -1;
                         String analysis = WarehouseSkills.getProductAnalysis(pid);
                         String productLabel = pid;
                         if (analysis.startsWith("Product: ")) { int c = analysis.indexOf(","); if (c > 9) productLabel = analysis.substring(9, c).trim(); }
@@ -969,6 +1035,9 @@ public class AIAgent {
                     lastArrivingQuantity       = -1;
                     poCheckDone                = false;
                     allToPackingCounter        = false;
+                    remainingQtyToBin          = 0;
+                    pendingUpdateCount         = 0;
+                    tentativeBins.clear();
                     awaitingArrivalProduct     = false;
                     pendingBareProductId       = "";
                     awaitingQuantityFromWorker = false;
@@ -1027,6 +1096,11 @@ public class AIAgent {
 
                     if (resolvedId != null) {
                         lastArrivingProductId = resolvedId;
+                        allToPackingCounter   = false;
+                        poCheckDone           = false;
+                        remainingQtyToBin     = 0;
+                        pendingUpdateCount    = 0;
+                        tentativeBins.clear();
                         String productLabel = resolvedId;
                         if (resolvedDetail != null && resolvedDetail.startsWith("Product: ")) {
                             int comma = resolvedDetail.indexOf(",");

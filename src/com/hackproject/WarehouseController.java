@@ -3,6 +3,7 @@ package com.hackproject;
 import io.javalin.Javalin;
 import java.util.Map;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 public class WarehouseController {
     public static void main(String[] args) {
@@ -18,7 +19,7 @@ public class WarehouseController {
         // This replaces your @PostMapping("/chat")
         app.post("/api/chat", ctx -> {
             // 1. Get the message from Frontend
-            Map<String, String> request = gson.fromJson(ctx.body(), Map.class);
+            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
             String userMessage = request.get("message");
 
             System.out.println("Received message from Frontend: " + userMessage);

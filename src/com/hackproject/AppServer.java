@@ -1,8 +1,9 @@
 package com.hackproject;
 
 import io.javalin.Javalin;
-import io.javalin.json.JavalinGson; // Added this
-import com.google.gson.Gson;       // Added this
+import io.javalin.json.JavalinGson;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import java.util.Map;
 
 public class AppServer {
@@ -22,7 +23,7 @@ public class AppServer {
         // 3. Define the Route
         app.post("/api/chat", ctx -> {
             try {
-                Map<String, String> body = ctx.bodyAsClass(Map.class);
+                Map<String, String> body = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
                 String userMessage = body.get("message");
 
                 if (userMessage == null) {
