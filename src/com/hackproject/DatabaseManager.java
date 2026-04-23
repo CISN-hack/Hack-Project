@@ -6,23 +6,37 @@ import java.util.*;
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
-    // Query for Capacity/Grid data
+    // Query for Capacity/Grid data. bin_id format: A{aisle}-S{shelf}-L{level}-B{bin}
     public static List<Map<String, Object>> getInventoryData() {
         List<Map<String, Object>> data = new ArrayList<>();
-        String sql = "SELECT aisle, shelf, level, bin, capacity, status FROM inventory";
-        
+        String sql = "SELECT bin_id, status, blocked_status FROM Bins";
+
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
-            
+
             while (rs.next()) {
+                String binId = rs.getString("bin_id");
+                String[] parts = binId.split("-");
+                if (parts.length != 4) continue;
+
+                String occupancy = rs.getString("status");        // Empty | Half | Full
+                String blocked = rs.getString("blocked_status");  // Blocked | Clear
+
+                int capacity;
+                switch (occupancy == null ? "" : occupancy) {
+                    case "Full": capacity = 100; break;
+                    case "Half": capacity = 50;  break;
+                    default:     capacity = 0;   break;
+                }
+
                 Map<String, Object> row = new HashMap<>();
-                row.put("aisle", rs.getString("aisle"));
-                row.put("shelf", rs.getString("shelf"));
-                row.put("level", rs.getString("level"));
-                row.put("bin", rs.getString("bin"));
-                row.put("capacity", rs.getInt("capacity"));
-                row.put("status", rs.getString("status")); // e.g., 'active' or 'OFF'
+                row.put("aisle", parts[0]);
+                row.put("shelf", parts[1]);
+                row.put("level", parts[2]);
+                row.put("bin",   parts[3]);
+                row.put("capacity", capacity);
+                row.put("status", "Blocked".equals(blocked) ? "OFF" : "active");
                 data.add(row);
             }
         } catch (SQLException e) { e.printStackTrace(); }
