@@ -525,6 +525,12 @@ public class AIAgent {
                     return pa;
 
                 case "findOptimalBin":
+                    if (allToPackingCounter) {
+                        return TOOL_ERROR_PREFIX +
+                               " PACKING_COUNTER_ONLY. All arriving units are routed to the Packing Counter. " +
+                               "Do NOT call findOptimalBin. Tell the worker to take all units to the Packing Counter " +
+                               "and reply 'done'. No binning is needed.";
+                    }
                     if (lastArrivingQuantity <= 0) {
                         return TOOL_ERROR_PREFIX +
                                " QUANTITY_MISSING. Do not find a bin yet. Ask the worker how many units arrived first.";
@@ -579,6 +585,11 @@ public class AIAgent {
                     return searchResult;
 
                 case "updateBinStatus":
+                    if (allToPackingCounter) {
+                        return TOOL_ERROR_PREFIX +
+                               " PACKING_COUNTER_ONLY. All units are going to the Packing Counter — " +
+                               "no bin update is needed. Wait for the worker to confirm 'done' instead.";
+                    }
                     if (!workerJustConfirmed()) {
                         return TOOL_ERROR_PREFIX +
                                " updateBinStatus BLOCKED. Worker has not confirmed placement. " +
