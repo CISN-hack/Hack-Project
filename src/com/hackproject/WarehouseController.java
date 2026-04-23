@@ -16,9 +16,8 @@ public class WarehouseController {
             });
         }).start(8080);
 
-<<<<<<< HEAD
+
         // 2. Inventory Data (for Grid & Capacity tabs)
-=======
         // This replaces your @PostMapping("/chat")
         app.post("/api/chat", ctx -> {
             // 1. Get the message from Frontend
@@ -35,7 +34,6 @@ public class WarehouseController {
         });
         
         // This sends the bin occupancy data to your "Grid" and "Capacity" tabs
->>>>>>> 5422cc5121f3cfaa282ae9e7d4301b42aa9425e8
         app.get("/api/inventory", ctx -> {
             ctx.json(DatabaseManager.getInventoryData());
         });
