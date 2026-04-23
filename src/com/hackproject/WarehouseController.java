@@ -30,6 +30,16 @@ public class WarehouseController {
             ctx.json(Map.of("reply", aiReply));
         });
         
+        // This sends the bin occupancy data to your "Grid" and "Capacity" tabs
+        app.get("/api/inventory", ctx -> {
+            ctx.json(DatabaseManager.getInventoryData());
+        });
+
+        // This sends the product sales data to your "Pulse" (Sales) tab
+        app.get("/api/velocity", ctx -> {
+            ctx.json(DatabaseManager.getSalesVelocity());
+        });
+
         System.out.println("Zai Server is running on http://localhost:8080");
     }
 }
