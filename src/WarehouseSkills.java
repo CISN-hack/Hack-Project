@@ -230,16 +230,15 @@ public class WarehouseSkills {
         else System.out.println("[SHIFT REPORT] Sent to all managers.");
     }
 
-    // Notifies all managers when a PO match is found for arriving stock.
-    public static void notifyPoArrival(String productId, String customer, String poQty, String priority, int arrivedQty) {
-        String message = "<b>📦 PURCHASE ORDER ARRIVAL</b>\n" +
+    // Notifies all managers when a CO match is found for arriving stock.
+    public static void notifyCoArrival(String productId, String customer, String coQty, String priority, int arrivedQty) {
+        String message = "<b>📦 CUSTOMER ORDER ARRIVAL</b>\n" +
                          "🏷️ <b>Product:</b> " + escapeHtml(productId) + "\n" +
                          "🏢 <b>Customer:</b> " + escapeHtml(customer) + "\n" +
-                         "📋 <b>PO Qty:</b> " + escapeHtml(poQty) + "\n" +
                          "🚚 <b>Arrived:</b> " + arrivedQty + " units\n" +
                          "⚡ <b>Priority:</b> " + escapeHtml(priority);
         String error = notifyAllManagers(message);
-        if (error != null) System.out.println("[PO NOTIFY] Telegram failed: " + error);
+        if (error != null) System.out.println("[CO NOTIFY] Telegram failed: " + error);
     }
 
     // Sends an HTML Telegram message to every manager in MANAGER_CHAT_IDS.

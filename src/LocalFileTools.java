@@ -3,7 +3,7 @@ import java.io.FileReader;
 import java.io.IOException;
 
 public class LocalFileTools {
-    public static String readLocalPurchaseOrder(String filePath) {
+    public static String readLocalCustomerOrder(String filePath) {
         StringBuilder data = new StringBuilder();
         try (BufferedReader br = new BufferedReader(new FileReader(filePath))) {
             String line;
