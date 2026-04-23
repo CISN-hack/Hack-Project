@@ -43,7 +43,7 @@ public class AIAgent {
         "  • WHOLE WAREHOUSE — if the worker asks for the FULL inventory (e.g. 'what products do we have?', 'list everything in stock', 'show warehouse inventory'):\n" +
         "      – Call 'listWarehouseInventory' (no arguments).\n" +
         "      – Present the tool result directly to the worker (it is already formatted as a list).\n" +
-        "  • DO NOT call readLocalPurchaseOrder, findOptimalBin, or updateBinStatus. Lookups are read-only.\n" +
+        "  • DO NOT call readLocalCustomerOrder, findOptimalBin, or updateBinStatus. Lookups are read-only.\n" +
         "  • DO NOT start the delivery workflow.\n\n" +
 
         "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
@@ -62,9 +62,9 @@ public class AIAgent {
         "  • Store this number — you will need it to decide routing in STEP 2.\n" +
         "  • If the worker asks where to put stock / for the optimal bin / for the exact location but has NOT given a quantity, you MUST reply with ONLY the quantity question. Do not call any tool, do not suggest a bin, do not mention the Packing Counter, do not guess a number like 1. Quantity is REQUIRED before any routing.\n\n" +
 
-        "STEP 2 — CHECK THE PURCHASE ORDER:\n" +
-        "  • Call 'readLocalPurchaseOrder'.\n" +
-        "  • A [PO MATCH FOUND] or [NO PO MATCH] message will be injected automatically after the result.\n" +
+        "STEP 2 — CHECK THE CUSTOMER ORDER:\n" +
+        "  • Call 'readLocalCustomerOrder'.\n" +
+        "  • A [CO MATCH FOUND] or [NO CO MATCH] message will be injected automatically after the result.\n" +
         "  • Read it carefully and follow its routing instruction exactly.\n\n" +
 
         "STEP 3 — BINNING (only if needed):\n" +
@@ -79,7 +79,7 @@ public class AIAgent {
         "      – How many units go to the bin, and the exact bin ID\n" +
         "      – End with: 'Reply \"done\" when you have placed the items.'\n" +
         "  • STOP. Do not call any tool until the worker replies with 'done'.\n" +
-        "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [PO MATCH FOUND] / [SYSTEM PACKING ONLY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n\n" +
+        "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [CO MATCH FOUND] / [SYSTEM PACKING ONLY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n\n" +
 
         "STEP 5 — COMMIT (only after worker confirms):\n" +
         "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
@@ -153,16 +153,16 @@ public class AIAgent {
         }
     }
 
-    // Deterministic PO matching done in Java so the model can't miss or misread a hit.
-    // Injected as a user-role message after readLocalPurchaseOrder so the model sees explicit routing.
+    // Deterministic CO matching done in Java so the model can't miss or misread a hit.
+    // Injected as a user-role message after readLocalCustomerOrder so the model sees explicit routing.
     private static String buildPoMatchMessage(String csvData, String arrivingProductId) {
         if (arrivingProductId == null || arrivingProductId.isBlank()) {
-            return "[PO MATCH SKIPPED] No arriving product ID was recorded. Ask the worker for the product ID.";
+            return "[CO MATCH SKIPPED] No arriving product ID was recorded. Ask the worker for the product ID.";
         }
 
         String[] lines = csvData.split("\\r?\\n");
         if (lines.length < 2) {
-            return "[NO PO MATCH] PO file is empty or unreadable. Bin all arriving units.";
+            return "[NO CO MATCH] CO file is empty or unreadable. Bin all arriving units.";
         }
 
         String[] headers = lines[0].split(",");
@@ -184,7 +184,7 @@ public class AIAgent {
         }
 
         if (colProductId == -1) {
-            return "[PO MATCH ERROR] Could not find ProductID column in PO file. Bin all arriving units.";
+            return "[CO MATCH ERROR] Could not find ProductID column in CO file. Bin all arriving units.";
         }
 
         for (int i = 1; i < lines.length; i++) {
@@ -201,10 +201,10 @@ public class AIAgent {
                 String priority = (colPriority >= 0 && colPriority < cols.length)
                         ? cols[colPriority].trim() : "Standard";
 
-                return "[PO MATCH FOUND]\n" +
+                return "[CO MATCH FOUND]\n" +
                        "Product : " + poProductId + "\n" +
                        "Customer: " + customer + "\n" +
-                       "PO Qty  : " + qty + " units\n" +
+                       "CO Qty  : " + qty + " units\n" +
                        "Priority: " + priority + "\n\n" +
                        "ROUTING INSTRUCTION:\n" +
                        "Route " + qty + " units to the Packing Counter for " + customer +
@@ -214,7 +214,7 @@ public class AIAgent {
             }
         }
 
-        return "[NO PO MATCH] Product '" + arrivingProductId + "' is not in the current PO.\n" +
+        return "[NO CO MATCH] Product '" + arrivingProductId + "' is not in the current CO.\n" +
                "ROUTING INSTRUCTION: Bin all arriving units using getProductAnalysis + findOptimalBin.";
     }
 
@@ -374,33 +374,33 @@ public class AIAgent {
                 toolResultMsg.addProperty("content", toolOutput);
                 conversationHistory.add(toolResultMsg);
 
-                if ("readLocalPurchaseOrder".equals(funcName)) {
+                if ("readLocalCustomerOrder".equals(funcName)) {
                     String matchResult = buildPoMatchMessage(toolOutput, lastArrivingProductId);
-                    System.out.println("\n[SYSTEM PO CHECK]\n" + matchResult);
+                    System.out.println("\n[SYSTEM CO CHECK]\n" + matchResult);
 
                     JsonObject poCheckMsg = new JsonObject();
                     poCheckMsg.addProperty("role", "user");
                     poCheckMsg.addProperty("content",
-                        "[SYSTEM PO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
+                        "[SYSTEM CO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
                     conversationHistory.add(poCheckMsg);
 
-                    // Notify managers via Telegram when arriving stock matches a PO
-                    if (matchResult.startsWith("[PO MATCH FOUND]")) {
+                    // Notify managers via Telegram when arriving stock matches a CO
+                    if (matchResult.startsWith("[CO MATCH FOUND]")) {
                         String customer = "Unknown";
-                        String poQty    = "?";
+                        String coQty    = "?";
                         String priority = "Standard";
                         for (String line : matchResult.split("\\r?\\n")) {
                             if (line.startsWith("Customer:")) customer = line.substring("Customer:".length()).trim();
-                            else if (line.startsWith("PO Qty  :")) poQty = line.substring("PO Qty  :".length()).trim();
+                            else if (line.startsWith("CO Qty  :")) coQty = line.substring("CO Qty  :".length()).trim();
                             else if (line.startsWith("Priority:")) priority = line.substring("Priority:".length()).trim();
                         }
-                        WarehouseSkills.notifyPoArrival(lastArrivingProductId, customer, poQty, priority, lastArrivingQuantity);
+                        WarehouseSkills.notifyCoArrival(lastArrivingProductId, customer, coQty, priority, lastArrivingQuantity);
                         lastPoCustomer = customer;
 
-                        // Detect "all to Packing Counter" case: arriving qty <= PO qty means no binning
+                        // Detect "all to Packing Counter" case: arriving qty <= CO qty means no binning
                         try {
-                            int poQtyNum = Integer.parseInt(poQty.replaceAll("[^0-9]", ""));
-                            if (lastArrivingQuantity <= poQtyNum) {
+                            int coQtyNum = Integer.parseInt(coQty.replaceAll("[^0-9]", ""));
+                            if (lastArrivingQuantity <= coQtyNum) {
                                 allToPackingCounter = true;
                                 JsonObject packMsg = new JsonObject();
                                 packMsg.addProperty("role", "user");
@@ -415,7 +415,7 @@ public class AIAgent {
                 }
             }
 
-            // Gate: the PO check can't run without a known arrival quantity. Ask the worker
+            // Gate: the CO check can't run without a known arrival quantity. Ask the worker
             // directly rather than letting the model hallucinate a number.
             if (quantityMissing) {
                 String productLabel = lastArrivingProductId.isEmpty() ? "the product" : lastArrivingProductId;
@@ -505,14 +505,14 @@ public class AIAgent {
     private static String dispatchTool(String funcName, JsonObject args) {
         try {
             switch (funcName) {
-                case "readLocalPurchaseOrder":
+                case "readLocalCustomerOrder":
                     if (lastArrivingQuantity <= 0) {
                         return TOOL_ERROR_PREFIX +
-                               " QUANTITY_MISSING. Do not check the PO yet. Ask the worker how many units arrived first.";
+                               " QUANTITY_MISSING. Do not check the CO yet. Ask the worker how many units arrived first.";
                     }
                     poCheckDone = true;
-                    return LocalFileTools.readLocalPurchaseOrder(
-                            args.has("filePath") ? args.get("filePath").getAsString() : "PO_April20.csv");
+                    return LocalFileTools.readLocalCustomerOrder(
+                            args.has("filePath") ? args.get("filePath").getAsString() : "CO_April20.csv");
 
                 case "getProductAnalysis":
                     lastArrivingProductId = args.get("productId").getAsString().toUpperCase();
@@ -535,7 +535,7 @@ public class AIAgent {
                     }
                     if (!poCheckDone) {
                         return TOOL_ERROR_PREFIX +
-                               " PO_CHECK_REQUIRED. Call readLocalPurchaseOrder before finding a bin.";
+                               " CO_CHECK_REQUIRED. Call readLocalCustomerOrder before finding a bin.";
                     }
                     // Java computes weight/volume/velocity itself from the DB so the model can't
                     // mis-multiply or echo stale numbers. The args passed in are ignored.
@@ -1038,8 +1038,8 @@ public class AIAgent {
                             nudgeContent =
                                 "[SYSTEM DELIVERY STARTED] This is a stock arrival, NOT a lookup. " +
                                 "Product: " + productRef + ". Arriving quantity: " + lastArrivingQuantity + " units. " +
-                                "STEP 1 and STEP 1b are complete. Proceed to STEP 2: call readLocalPurchaseOrder " +
-                                "and follow the [PO MATCH FOUND] / [NO PO MATCH] routing exactly. " +
+                                "STEP 1 and STEP 1b are complete. Proceed to STEP 2: call readLocalCustomerOrder " +
+                                "and follow the [CO MATCH FOUND] / [NO CO MATCH] routing exactly. " +
                                 "DO NOT call findProductLocation. DO NOT reply that the product is 'not in the warehouse'.";
                         } else {
                             nudgeContent =
@@ -1070,7 +1070,7 @@ public class AIAgent {
 
             // Resume nudge: once the worker answers the quantity question, deterministically
             // tell the LLM what to do next. Without this, the model often stalls or re-asks
-            // instead of continuing to readLocalPurchaseOrder → findOptimalBin.
+            // instead of continuing to readLocalCustomerOrder → findOptimalBin.
             if (justReceivedQuantity) {
                 // If the LLM never resolved the product (e.g. it hallucinated earlier without
                 // calling getProductAnalysis), recover the product code from recent user messages
@@ -1085,9 +1085,9 @@ public class AIAgent {
                 nudge.append(". Resume the delivery workflow now. ");
                 if (lastArrivingProductId.isEmpty()) {
                     nudge.append("First call getProductAnalysis (or searchProductByDescription) to resolve the product ID, ")
-                         .append("then call readLocalPurchaseOrder, then follow its routing instruction. ");
+                         .append("then call readLocalCustomerOrder, then follow its routing instruction. ");
                 } else if (!poCheckDone) {
-                    nudge.append("Call readLocalPurchaseOrder next, then follow the [PO MATCH FOUND] / [NO PO MATCH] routing instruction exactly. ");
+                    nudge.append("Call readLocalCustomerOrder next, then follow the [CO MATCH FOUND] / [NO CO MATCH] routing instruction exactly. ");
                 } else {
                     nudge.append("Call findOptimalBin next and tell the worker the bin ID. ");
                 }

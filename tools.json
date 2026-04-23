@@ -2,12 +2,12 @@
   {
     "type": "function",
     "function": {
-      "name": "readLocalPurchaseOrder",
-      "description": "PROTOCOL ALPHA: Use this first to check 'PO_April20.csv' for customer orders whenever new stock arrives.",
+      "name": "readLocalCustomerOrder",
+      "description": "PROTOCOL ALPHA: Use this first to check 'CO_April20.csv' for customer orders whenever new stock arrives.",
       "parameters": {
         "type": "object",
         "properties": {
-          "filePath": { "type": "string", "description": "The name of the CSV file, usually 'PO_April20.csv'." }
+          "filePath": { "type": "string", "description": "The name of the CSV file, usually 'CO_April20.csv'." }
         },
         "required": ["filePath"]
       }
