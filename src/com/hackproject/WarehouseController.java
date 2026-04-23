@@ -1,6 +1,7 @@
 package com.hackproject;
 
 import io.javalin.Javalin;
+import io.javalin.json.JavalinGson;
 import java.util.Map;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -9,38 +10,37 @@ public class WarehouseController {
     public static void main(String[] args) {
         Gson gson = new Gson();
 
-        // Starts the server on port 8080
+        // 1. Start the server with proper CORS for React
         Javalin app = Javalin.create(config -> {
+            config.jsonMapper(new JavalinGson()); // Tells Javalin how to read JSON
             config.bundledPlugins.enableCors(cors -> {
-                cors.addRule(it -> it.anyHost());
+                cors.addRule(it -> it.anyHost()); 
             });
         }).start(8080);
 
-        // This replaces your @PostMapping("/chat")
-        app.post("/api/chat", ctx -> {
-            // 1. Get the message from Frontend
-            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
-            String userMessage = request.get("message");
-
-            System.out.println("Received message from Frontend: " + userMessage);
-
-            // 2. Get AI Response
-            String aiReply = AIAgent.getAIResponseForWeb(userMessage);
-
-            // 3. Send back as JSON
-            ctx.json(Map.of("reply", aiReply));
-        });
-        
-        // This sends the bin occupancy data to your "Grid" and "Capacity" tabs
+        // 2. GET: Inventory Data (Capacity & Grid)
         app.get("/api/inventory", ctx -> {
             ctx.json(DatabaseManager.getInventoryData());
         });
 
-        // This sends the product sales data to your "Pulse" (Sales) tab
+        // 3. GET: Sales Velocity Data (Pulse/Velocity tab)
         app.get("/api/velocity", ctx -> {
             ctx.json(DatabaseManager.getSalesVelocity());
         });
 
-        System.out.println("Zai Server is running on http://localhost:8080");
+        // 4. POST: AI Chat Endpoint (ONLY ONE DEFINITION)
+        app.post("/api/chat", ctx -> {
+            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
+            String userMessage = request.get("message");
+
+            System.out.println("Processing message: " + userMessage);
+
+            // Get response from your AIAgent class
+            String aiReply = AIAgent.getAIResponseForWeb(userMessage);
+
+            ctx.json(Map.of("reply", aiReply));
+        });
+
+        System.out.println("🚀 Zai Server is live on http://localhost:8080");
     }
 }
