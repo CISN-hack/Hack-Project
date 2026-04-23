@@ -11,8 +11,8 @@ public class WarehouseController {
 
         // 1. Start the server with proper CORS for React
         Javalin app = Javalin.create(config -> {
-            config.plugins.enableCors(cors -> {
-                cors.add(it -> it.anyHost()); 
+            config.bundledPlugins.enableCors(cors -> {
+                cors.addRule(it -> it.anyHost()); 
             });
         }).start(8080);
 
