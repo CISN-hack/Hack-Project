@@ -7,6 +7,8 @@ import java.net.http.HttpResponse;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Files;
@@ -54,10 +56,11 @@ public class AIAgent {
         "  • If 'searchProductByDescription' returns MORE THAN ONE product, list all results to the worker and ask which one arrived. STOP — do NOT call 'getProductAnalysis' until the worker picks one.\n" +
         "  • Do NOT proceed until you have a confirmed product ID.\n\n" +
 
-        "STEP 1b — GET ARRIVING QUANTITY:\n" +
+        "STEP 1b — GET ARRIVING QUANTITY (HARD GATE):\n" +
         "  • Ask the worker: 'How many units of [product name] arrived?'\n" +
         "  • Do NOT proceed until the worker gives you a number.\n" +
-        "  • Store this number — you will need it to decide routing in STEP 2.\n\n" +
+        "  • Store this number — you will need it to decide routing in STEP 2.\n" +
+        "  • If the worker asks where to put stock / for the optimal bin / for the exact location but has NOT given a quantity, you MUST reply with ONLY the quantity question. Do not call any tool, do not suggest a bin, do not mention the Packing Counter, do not guess a number like 1. Quantity is REQUIRED before any routing.\n\n" +
 
         "STEP 2 — CHECK THE PURCHASE ORDER:\n" +
         "  • Call 'readLocalPurchaseOrder'.\n" +
@@ -75,7 +78,8 @@ public class AIAgent {
         "      – How many units go to the Packing Counter (if any)\n" +
         "      – How many units go to the bin, and the exact bin ID\n" +
         "      – End with: 'Reply \"done\" when you have placed the items.'\n" +
-        "  • STOP. Do not call any tool until the worker replies with 'done'.\n\n" +
+        "  • STOP. Do not call any tool until the worker replies with 'done'.\n" +
+        "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [PO MATCH FOUND] / [SYSTEM PACKING ONLY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n\n" +
 
         "STEP 5 — COMMIT (only after worker confirms):\n" +
         "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
@@ -93,12 +97,35 @@ public class AIAgent {
         conversationHistory.add(welcome);
     }
 
-    private static String lastArrivingProductId = "";
-    private static int lastArrivingQuantity = -1;
+    private static String lastArrivingProductId   = "";
+    private static String lastArrivingProductName = "";
+    private static String lastPoCustomer          = "";
+    private static int    lastArrivingQuantity    = -1;
     private static boolean awaitingArrivalProduct = false;
-    private static String pendingBareProductId = "";
+    private static String pendingBareProductId    = "";
+    private static boolean poCheckDone            = false;
+    private static boolean allToPackingCounter    = false;
+    // True whenever Zai has just asked the worker for an arriving quantity and is waiting on a reply.
+    // Set by the QUANTITY_MISSING handler and the routing-hallucination guard; cleared once the worker
+    // answers with a number, at which point we inject a [SYSTEM QUANTITY RECEIVED] nudge to resume
+    // the delivery workflow instead of relying on the LLM to remember where it left off.
+    private static boolean awaitingQuantityFromWorker = false;
+
+    // ── Shift log ─────────────────────────────────────────────────────────────
+    private static final long         shiftStartTime = System.currentTimeMillis();
+    private static final List<String> deliveryLog    = new ArrayList<>();
+    private static final List<String> accidentLog    = new ArrayList<>();
+    private static final List<String> clearedLog     = new ArrayList<>();
+
+    private static String now() {
+        return java.time.LocalTime.now()
+               .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"));
+    }
 
     private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
+    private static final Pattern EMERGENCY_KEYWORDS = Pattern.compile(
+        "\\b(accident|accidental|broke|broken|fire|smoke|injury|injured|hurt|pain|spill|leak|block|blocked|aisle|machine|forklift|fall|fell|fallen|emergency|danger|dangerous|collapse|stuck|trapped|flood|damage|damaged|crash|crashed|explosion|explode)\\b",
+        Pattern.CASE_INSENSITIVE);
     private static final Pattern ARRIVAL_SIGNAL = Pattern.compile(
         "\\b(lorry|lorries|truck|trucks|deliver(?:y|ies|ed)|shipment|arrived|arrival|cargo|received|incoming|unloaded|dispatched)\\b",
         Pattern.CASE_INSENSITIVE);
@@ -356,6 +383,35 @@ public class AIAgent {
                     poCheckMsg.addProperty("content",
                         "[SYSTEM PO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
                     conversationHistory.add(poCheckMsg);
+
+                    // Notify managers via Telegram when arriving stock matches a PO
+                    if (matchResult.startsWith("[PO MATCH FOUND]")) {
+                        String customer = "Unknown";
+                        String poQty    = "?";
+                        String priority = "Standard";
+                        for (String line : matchResult.split("\\r?\\n")) {
+                            if (line.startsWith("Customer:")) customer = line.substring("Customer:".length()).trim();
+                            else if (line.startsWith("PO Qty  :")) poQty = line.substring("PO Qty  :".length()).trim();
+                            else if (line.startsWith("Priority:")) priority = line.substring("Priority:".length()).trim();
+                        }
+                        WarehouseSkills.notifyPoArrival(lastArrivingProductId, customer, poQty, priority, lastArrivingQuantity);
+                        lastPoCustomer = customer;
+
+                        // Detect "all to Packing Counter" case: arriving qty <= PO qty means no binning
+                        try {
+                            int poQtyNum = Integer.parseInt(poQty.replaceAll("[^0-9]", ""));
+                            if (lastArrivingQuantity <= poQtyNum) {
+                                allToPackingCounter = true;
+                                JsonObject packMsg = new JsonObject();
+                                packMsg.addProperty("role", "user");
+                                packMsg.addProperty("content",
+                                    "[SYSTEM PACKING ONLY] All " + lastArrivingQuantity + " units go to the Packing Counter for "
+                                    + customer + ". Do NOT call findOptimalBin or updateBinStatus. "
+                                    + "Tell the worker to take all units to the Packing Counter and reply 'done'. No further tool calls are needed.");
+                                conversationHistory.add(packMsg);
+                            }
+                        } catch (NumberFormatException ignored) {}
+                    }
                 }
             }
 
@@ -369,6 +425,7 @@ public class AIAgent {
                 aMsg.addProperty("role", "assistant");
                 aMsg.addProperty("content", reply);
                 conversationHistory.add(aMsg);
+                awaitingQuantityFromWorker = true;
                 return;
             }
 
@@ -423,6 +480,23 @@ public class AIAgent {
 
         } else if (message.has("content") && !message.get("content").isJsonNull()) {
             String content = message.get("content").getAsString();
+
+            // Hallucination guard: the model sometimes replies with routing instructions
+            // (bin IDs, "N units to the Packing Counter") without ever calling findOptimalBin,
+            // inventing a quantity like 1. If we have no confirmed arriving quantity yet,
+            // overwrite the reply with the quantity question instead of emitting garbage.
+            if (lastArrivingQuantity <= 0 && looksLikeRoutingInstruction(content)) {
+                String productLabel = lastArrivingProductId.isEmpty() ? "the product" : lastArrivingProductId;
+                String safe = "How many units of " + productLabel + " arrived? I need the quantity before I can find a bin.";
+                System.out.println("\nZai: " + safe);
+                JsonObject aMsg = new JsonObject();
+                aMsg.addProperty("role", "assistant");
+                aMsg.addProperty("content", safe);
+                conversationHistory.add(aMsg);
+                awaitingQuantityFromWorker = true;
+                return;
+            }
+
             System.out.println("\nZai: " + content);
             conversationHistory.add(message);
         }
@@ -436,13 +510,19 @@ public class AIAgent {
                         return TOOL_ERROR_PREFIX +
                                " QUANTITY_MISSING. Do not check the PO yet. Ask the worker how many units arrived first.";
                     }
+                    poCheckDone = true;
                     return LocalFileTools.readLocalPurchaseOrder(
                             args.has("filePath") ? args.get("filePath").getAsString() : "PO_April20.csv");
 
                 case "getProductAnalysis":
                     lastArrivingProductId = args.get("productId").getAsString().toUpperCase();
                     System.out.println("[SYSTEM] AI resolved product ID: " + lastArrivingProductId);
-                    return WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
+                    String pa = WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
+                    if (pa.startsWith("Product: ")) {
+                        int c = pa.indexOf(",");
+                        if (c > 9) lastArrivingProductName = pa.substring(9, c).trim();
+                    }
+                    return pa;
 
                 case "findOptimalBin":
                     if (lastArrivingQuantity <= 0) {
@@ -452,6 +532,10 @@ public class AIAgent {
                     if (lastArrivingProductId.isEmpty()) {
                         return TOOL_ERROR_PREFIX +
                                " PRODUCT_MISSING. Call getProductAnalysis (or searchProductByDescription) first.";
+                    }
+                    if (!poCheckDone) {
+                        return TOOL_ERROR_PREFIX +
+                               " PO_CHECK_REQUIRED. Call readLocalPurchaseOrder before finding a bin.";
                     }
                     // Java computes weight/volume/velocity itself from the DB so the model can't
                     // mis-multiply or echo stale numbers. The args passed in are ignored.
@@ -505,23 +589,49 @@ public class AIAgent {
                             args.get("status").getAsString(),
                             args.get("productId").getAsString());
                     if (!binResult.startsWith(TOOL_ERROR_PREFIX)) {
-                        lastArrivingProductId = "";
-                        lastArrivingQuantity = -1;
+                        String logName = lastArrivingProductName.isEmpty()
+                            ? lastArrivingProductId
+                            : lastArrivingProductName + " (" + lastArrivingProductId + ")";
+                        deliveryLog.add("[" + now() + "] " + lastArrivingQuantity + "x " + logName
+                            + " → Bin " + args.get("binId").getAsString());
+                        lastArrivingProductId      = "";
+                        lastArrivingProductName    = "";
+                        lastPoCustomer             = "";
+                        lastArrivingQuantity       = -1;
+                        poCheckDone                = false;
+                        allToPackingCounter        = false;
+                        awaitingArrivalProduct     = false;
+                        pendingBareProductId       = "";
+                        awaitingQuantityFromWorker = false;
                     }
                     return binResult;
 
                 case "reportAccident":
+                    if (!recentMessageContainsEmergencyKeyword()) {
+                        return TOOL_ERROR_PREFIX +
+                               " reportAccident BLOCKED. No emergency keywords found in the worker's message. " +
+                               "Do not fabricate emergencies. Ask the worker to describe what happened.";
+                    }
                     String accidentResult = WarehouseSkills.reportAccident(
                             args.get("location").getAsString(),
                             args.get("description").getAsString());
                     if (!accidentResult.startsWith(TOOL_ERROR_PREFIX)) {
-                        lastArrivingProductId = "";
-                        lastArrivingQuantity = -1;
+                        accidentLog.add("[" + now() + "] " + args.get("location").getAsString()
+                            + " — " + args.get("description").getAsString());
+                        lastArrivingProductId   = "";
+                        lastArrivingProductName = "";
+                        lastPoCustomer          = "";
+                        lastArrivingQuantity    = -1;
+                        poCheckDone             = false;
                     }
                     return accidentResult;
 
                 case "clearAisle":
-                    return WarehouseSkills.clearAisle(args.get("location").getAsString());
+                    String clearResult = WarehouseSkills.clearAisle(args.get("location").getAsString());
+                    if (!clearResult.startsWith(TOOL_ERROR_PREFIX)) {
+                        clearedLog.add("[" + now() + "] " + args.get("location").getAsString());
+                    }
+                    return clearResult;
 
                 default:
                     return TOOL_ERROR_PREFIX + " Unknown tool '" + funcName + "'";
@@ -532,6 +642,38 @@ public class AIAgent {
     }
 
     private static final Pattern BIN_ID_PATTERN = Pattern.compile("[A-Z]\\d+-S\\d+-L\\d+-B\\d+");
+
+    // Detect assistant replies that look like delivery routing (bin IDs, Packing Counter, unit splits).
+    // Used to catch the model hallucinating an answer like "put 1 unit to packing counter and 1 unit to
+    // bin A1-S1-L1-B1" when it has no real quantity and never called findOptimalBin.
+    private static final Pattern ROUTING_INSTRUCTION = Pattern.compile(
+        "(?i)\\bpacking\\s+counter\\b|\\b\\d+\\s+units?\\s+(?:to|in|into|at)\\s+(?:the\\s+)?(?:bin|packing)\\b|[A-Z]\\d+-S\\d+-L\\d+-B\\d+");
+
+    private static boolean looksLikeRoutingInstruction(String content) {
+        return content != null && ROUTING_INSTRUCTION.matcher(content).find();
+    }
+
+    // Scan recent real user messages for a token that looks like a product code (e.g. K15VC).
+    // Used to recover lastArrivingProductId when the LLM hallucinated routing earlier without
+    // ever calling getProductAnalysis, so the resume nudge can name the actual product.
+    private static void recoverProductIdFromHistory() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !msg.has("content")) continue;
+            if (!"user".equals(msg.get("role").getAsString())) continue;
+            String content = msg.get("content").getAsString();
+            if (content.startsWith("[SYSTEM") || content.startsWith("[BATCH")) continue;
+            Matcher m = PRODUCT_CODE_IN_MSG.matcher(content);
+            if (m.find()) {
+                String candidate = m.group().toUpperCase();
+                if (!"Product not found.".equals(WarehouseSkills.getProductAnalysis(candidate))) {
+                    lastArrivingProductId = candidate;
+                    System.out.println("[SYSTEM] Recovered product ID from history: " + candidate);
+                    return;
+                }
+            }
+        }
+    }
 
     private static String findLastBinId() {
         for (int i = conversationHistory.size() - 1; i >= 0; i--) {
@@ -544,12 +686,26 @@ public class AIAgent {
         return null;
     }
 
+    private static boolean recentMessageContainsEmergencyKeyword() {
+        for (int i = conversationHistory.size() - 1; i >= 0; i--) {
+            JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !msg.has("content")) continue;
+            if ("user".equals(msg.get("role").getAsString())) {
+                String content = msg.get("content").getAsString();
+                if (content.startsWith("[SYSTEM")) continue;
+                return EMERGENCY_KEYWORDS.matcher(content).find();
+            }
+        }
+        return false;
+    }
+
     private static boolean workerJustConfirmed() {
         for (int i = conversationHistory.size() - 1; i >= 0; i--) {
             JsonObject msg = conversationHistory.get(i).getAsJsonObject();
+            if (!msg.has("role") || !msg.has("content")) continue;
             if ("user".equals(msg.get("role").getAsString())) {
                 String content = msg.get("content").getAsString().toLowerCase();
-                if (content.startsWith("[system")) continue; // skip injected PO check messages
+                if (content.startsWith("[system")) continue;
                 return content.contains("done")
                     || content.contains("placed")
                     || content.contains("confirmed")
@@ -592,6 +748,34 @@ public class AIAgent {
         return ARRIVAL_SIGNAL.matcher(input).find() && !PRODUCT_CODE_IN_MSG.matcher(input).find();
     }
 
+    private static String generateShiftReport() {
+        long elapsed = System.currentTimeMillis() - shiftStartTime;
+        long hours   = elapsed / 3600000;
+        long minutes = (elapsed % 3600000) / 60000;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("📊 SHIFT REPORT\n");
+        sb.append("🕐 Duration: ").append(hours).append("h ").append(minutes).append("m\n");
+
+        if (deliveryLog.isEmpty() && accidentLog.isEmpty() && clearedLog.isEmpty()) {
+            sb.append("\nNo events recorded this shift.");
+        } else {
+            if (!deliveryLog.isEmpty()) {
+                sb.append("\n📦 Deliveries (").append(deliveryLog.size()).append(")\n");
+                for (String e : deliveryLog) sb.append("  • ").append(e).append("\n");
+            }
+            if (!accidentLog.isEmpty()) {
+                sb.append("\n🚨 Accidents (").append(accidentLog.size()).append(")\n");
+                for (String e : accidentLog) sb.append("  • ").append(e).append("\n");
+            }
+            if (!clearedLog.isEmpty()) {
+                sb.append("\n✅ Aisles Cleared (").append(clearedLog.size()).append(")\n");
+                for (String e : clearedLog) sb.append("  • ").append(e).append("\n");
+            }
+        }
+        return sb.toString().trim();
+    }
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
         System.out.println("==============================================");
@@ -604,7 +788,30 @@ public class AIAgent {
             if (userInput.equalsIgnoreCase("exit")) break;
             if (userInput.isEmpty()) continue;
 
+            if (userInput.equalsIgnoreCase("report")) {
+                String report = generateShiftReport();
+                System.out.println("\n" + report);
+                WarehouseSkills.notifyShiftReport(report);
+                continue;
+            }
+
+            if (userInput.equalsIgnoreCase("cancel") || userInput.equalsIgnoreCase("reset")) {
+                lastArrivingProductId      = "";
+                lastArrivingQuantity       = -1;
+                poCheckDone                = false;
+                allToPackingCounter        = false;
+                awaitingArrivalProduct     = false;
+                pendingBareProductId       = "";
+                awaitingQuantityFromWorker = false;
+                while (conversationHistory.size() > 0) conversationHistory.remove(0);
+                System.out.println("\nZai: Workflow cancelled. Ready for a new task.");
+                continue;
+            }
+
+            int prevArrivingQuantity = lastArrivingQuantity;
             tryUpdateArrivingQuantity(userInput);
+            boolean justReceivedQuantity =
+                awaitingQuantityFromWorker && prevArrivingQuantity <= 0 && lastArrivingQuantity > 0;
 
             // ── ARRIVAL PRODUCT LOOKUP ──────────────────────────────────────────────
             // Fired after isGenericArrival asked "what product?". Bypasses the bare-product-ID
@@ -728,6 +935,36 @@ public class AIAgent {
                 continue;
             }
 
+            // When all units go to the Packing Counter, no bin update is needed.
+            // Intercept the worker's confirmation directly and reset state.
+            if (allToPackingCounter) {
+                String lower = userInput.toLowerCase().trim();
+                boolean confirmed = lower.contains("done") || lower.contains("placed")
+                        || lower.contains("confirmed") || lower.contains("ok") || lower.contains("yes");
+                if (confirmed) {
+                    String logName = lastArrivingProductName.isEmpty()
+                        ? lastArrivingProductId
+                        : lastArrivingProductName + " (" + lastArrivingProductId + ")";
+                    String customerSuffix = lastPoCustomer.isEmpty() ? "" : " (" + lastPoCustomer + ")";
+                    deliveryLog.add("[" + now() + "] " + lastArrivingQuantity + "x " + logName
+                        + " → Packing Counter" + customerSuffix);
+                    String reply = "Delivery complete. All units have been sent to the Packing Counter. Good work!";
+                    System.out.println("\nZai: " + reply);
+                    JsonObject uMsg = new JsonObject(); uMsg.addProperty("role", "user"); uMsg.addProperty("content", userInput); conversationHistory.add(uMsg);
+                    JsonObject aMsg = new JsonObject(); aMsg.addProperty("role", "assistant"); aMsg.addProperty("content", reply); conversationHistory.add(aMsg);
+                    lastArrivingProductId      = "";
+                    lastArrivingProductName    = "";
+                    lastPoCustomer             = "";
+                    lastArrivingQuantity       = -1;
+                    poCheckDone                = false;
+                    allToPackingCounter        = false;
+                    awaitingArrivalProduct     = false;
+                    pendingBareProductId       = "";
+                    awaitingQuantityFromWorker = false;
+                    continue;
+                }
+            }
+
             if (isGenericArrival(userInput) && lastArrivingProductId.isEmpty()) {
                 awaitingArrivalProduct = true;
                 String reply = "Got it — what is the product ID or name of the stock that arrived?";
@@ -743,10 +980,125 @@ public class AIAgent {
                 continue;
             }
 
+            // Specific arrival: an arrival verb AND a product-code token in the same message
+            // (e.g. "a pallet of 20 K15VC arrived"). isGenericArrival deliberately skips this case,
+            // so without a dedicated branch the message falls through to the LLM and sometimes gets
+            // misrouted to PROTOCOL QUERY — the model calls findProductLocation and replies
+            // "there is no K15VC in the warehouse" even though the worker reported a delivery.
+            // Pin the product in Java and inject a [SYSTEM DELIVERY STARTED] nudge so the LLM
+            // goes straight to STEP 2 of the delivery workflow.
+            if (lastArrivingProductId.isEmpty() && ARRIVAL_SIGNAL.matcher(userInput).find()) {
+                Matcher pcm = PRODUCT_CODE_IN_MSG.matcher(userInput);
+                if (pcm.find()) {
+                    String pid = pcm.group().toUpperCase();
+                    String analysis = WarehouseSkills.getProductAnalysis(pid);
+                    String resolvedId = null;
+                    String resolvedDetail = null;
+
+                    if (!"Product not found.".equals(analysis)) {
+                        resolvedId = pid;
+                        resolvedDetail = analysis;
+                    } else {
+                        // Typo recovery: try a fuzzy search against the typed token.
+                        String searchResult = WarehouseSkills.searchProductByDescription(pid);
+                        if (!searchResult.startsWith("No products found")) {
+                            Matcher sm = Pattern
+                                .compile("(?i)(?:id[:\\s]+)([A-Z0-9][A-Z0-9\\-]{1,14})")
+                                .matcher(searchResult);
+                            String sFirstId = null; int sCount = 0;
+                            while (sm.find()) { sCount++; if (sFirstId == null) sFirstId = sm.group(1).toUpperCase(); }
+                            if (sCount == 1 && sFirstId != null) {
+                                resolvedId = sFirstId;
+                                resolvedDetail = WarehouseSkills.getProductAnalysis(sFirstId);
+                            }
+                        }
+                    }
+
+                    if (resolvedId != null) {
+                        lastArrivingProductId = resolvedId;
+                        String productLabel = resolvedId;
+                        if (resolvedDetail != null && resolvedDetail.startsWith("Product: ")) {
+                            int comma = resolvedDetail.indexOf(",");
+                            if (comma > 9) {
+                                lastArrivingProductName = resolvedDetail.substring(9, comma).trim();
+                                productLabel = lastArrivingProductName;
+                            }
+                        }
+                        System.out.println("[SYSTEM] Arrival detected — product: " + resolvedId
+                                + (lastArrivingQuantity > 0 ? ", quantity: " + lastArrivingQuantity : ", quantity: pending"));
+
+                        JsonObject uMsg = new JsonObject();
+                        uMsg.addProperty("role", "user");
+                        uMsg.addProperty("content", userInput);
+                        conversationHistory.add(uMsg);
+
+                        String productRef = productLabel.equals(resolvedId) ? resolvedId : productLabel + " (" + resolvedId + ")";
+                        String nudgeContent;
+                        if (lastArrivingQuantity > 0) {
+                            nudgeContent =
+                                "[SYSTEM DELIVERY STARTED] This is a stock arrival, NOT a lookup. " +
+                                "Product: " + productRef + ". Arriving quantity: " + lastArrivingQuantity + " units. " +
+                                "STEP 1 and STEP 1b are complete. Proceed to STEP 2: call readLocalPurchaseOrder " +
+                                "and follow the [PO MATCH FOUND] / [NO PO MATCH] routing exactly. " +
+                                "DO NOT call findProductLocation. DO NOT reply that the product is 'not in the warehouse'.";
+                        } else {
+                            nudgeContent =
+                                "[SYSTEM DELIVERY STARTED] This is a stock arrival, NOT a lookup. " +
+                                "Product: " + productRef + ". STEP 1 is complete. Proceed to STEP 1b: reply with " +
+                                "ONLY the question 'How many units of " + productLabel + " arrived?' and wait for an answer. " +
+                                "DO NOT call findProductLocation. DO NOT reply that the product is 'not in the warehouse'.";
+                            awaitingQuantityFromWorker = true;
+                        }
+                        JsonObject nudge = new JsonObject();
+                        nudge.addProperty("role", "user");
+                        nudge.addProperty("content", nudgeContent);
+                        conversationHistory.add(nudge);
+
+                        System.out.println("[Zai is thinking...]");
+                        processAIResponse(callAPI(conversationHistory), 0);
+                        continue;
+                    }
+                    // No unique match — fall through to the LLM, which will handle resolution
+                    // via searchProductByDescription under the DELIVERY WORKFLOW prompt.
+                }
+            }
+
             JsonObject userMsg = new JsonObject();
             userMsg.addProperty("role", "user");
             userMsg.addProperty("content", userInput);
             conversationHistory.add(userMsg);
+
+            // Resume nudge: once the worker answers the quantity question, deterministically
+            // tell the LLM what to do next. Without this, the model often stalls or re-asks
+            // instead of continuing to readLocalPurchaseOrder → findOptimalBin.
+            if (justReceivedQuantity) {
+                // If the LLM never resolved the product (e.g. it hallucinated earlier without
+                // calling getProductAnalysis), recover the product code from recent user messages
+                // so the nudge can be specific.
+                if (lastArrivingProductId.isEmpty()) {
+                    recoverProductIdFromHistory();
+                }
+
+                StringBuilder nudge = new StringBuilder("[SYSTEM QUANTITY RECEIVED] Arriving quantity = ")
+                    .append(lastArrivingQuantity).append(" units");
+                if (!lastArrivingProductId.isEmpty()) nudge.append(" of ").append(lastArrivingProductId);
+                nudge.append(". Resume the delivery workflow now. ");
+                if (lastArrivingProductId.isEmpty()) {
+                    nudge.append("First call getProductAnalysis (or searchProductByDescription) to resolve the product ID, ")
+                         .append("then call readLocalPurchaseOrder, then follow its routing instruction. ");
+                } else if (!poCheckDone) {
+                    nudge.append("Call readLocalPurchaseOrder next, then follow the [PO MATCH FOUND] / [NO PO MATCH] routing instruction exactly. ");
+                } else {
+                    nudge.append("Call findOptimalBin next and tell the worker the bin ID. ");
+                }
+                nudge.append("Do NOT ask for the quantity again.");
+
+                JsonObject sysNudge = new JsonObject();
+                sysNudge.addProperty("role", "user");
+                sysNudge.addProperty("content", nudge.toString());
+                conversationHistory.add(sysNudge);
+                awaitingQuantityFromWorker = false;
+            }
 
             System.out.println("[Zai is thinking...]");
             processAIResponse(callAPI(conversationHistory), 0);

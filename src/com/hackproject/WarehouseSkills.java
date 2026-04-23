@@ -198,11 +198,8 @@ public class WarehouseSkills {
 
         String error = notifyAllManagers(alertMessage);
         if (error != null) return "Accident logged, bins blocked, but Telegram failed: " + error;
-
         return "SUCCESS: Area '" + location + "' marked as blocked (" + binsBlocked + " bins locked). All managers notified via Telegram.";
     }
-
-
 
     // Handles only notification — DB clearing is delegated to InventoryTools
     public static String clearAisle(String location) {
@@ -214,8 +211,36 @@ public class WarehouseSkills {
 
         String error = notifyAllManagers(alertMessage);
         if (error != null) return "Aisle cleared in database, but Telegram failed: " + error;
-
         return "SUCCESS: Area '" + location + "' is now clear (" + binsCleared + " bins unblocked). All managers notified via Telegram.";
+    }
+
+    // Sends the end-of-shift report to all managers via Telegram.
+    public static void notifyShiftReport(String plainReport) {
+        String[] lines = plainReport.split("\n");
+        StringBuilder html = new StringBuilder();
+        for (String line : lines) {
+            String escaped = escapeHtml(line);
+            if (line.startsWith("📊") || line.startsWith("📦") || line.startsWith("🚨") || line.startsWith("✅")) {
+                html.append("<b>").append(escaped).append("</b>\n");
+            } else {
+                html.append(escaped).append("\n");
+            }
+        }
+        String error = notifyAllManagers(html.toString().trim());
+        if (error != null) System.out.println("[SHIFT REPORT] Telegram failed: " + error);
+        else System.out.println("[SHIFT REPORT] Sent to all managers.");
+    }
+
+    // Notifies all managers when a PO match is found for arriving stock.
+    public static void notifyPoArrival(String productId, String customer, String poQty, String priority, int arrivedQty) {
+        String message = "<b>📦 PURCHASE ORDER ARRIVAL</b>\n" +
+                         "🏷️ <b>Product:</b> " + escapeHtml(productId) + "\n" +
+                         "🏢 <b>Customer:</b> " + escapeHtml(customer) + "\n" +
+                         "📋 <b>PO Qty:</b> " + escapeHtml(poQty) + "\n" +
+                         "🚚 <b>Arrived:</b> " + arrivedQty + " units\n" +
+                         "⚡ <b>Priority:</b> " + escapeHtml(priority);
+        String error = notifyAllManagers(message);
+        if (error != null) System.out.println("[PO NOTIFY] Telegram failed: " + error);
     }
 
     // Sends an HTML Telegram message to every manager in MANAGER_CHAT_IDS.
