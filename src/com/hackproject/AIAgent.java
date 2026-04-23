@@ -47,10 +47,11 @@ public class AIAgent {
         "DELIVERY WORKFLOW (follow every step in order, no skipping):\n\n" +
 
         "STEP 1 — IDENTIFY THE PRODUCT:\n" +
+        "  • Only enter this step if the worker's message clearly describes a stock arrival or product lookup (e.g. mentions a product name, product ID, lorry, shipment, delivery, or asks where something is). If the message is ambiguous or unrelated to warehouse operations, ask the worker to clarify what they need — do NOT call any tool.\n" +
         "  • A deterministic pre-screen runs before you see the message: if the worker said only that stock/a lorry/a delivery arrived with NO product specified, Java already replied asking for the product — you will receive the product name or ID in the next message.\n" +
         "  • If the worker gave a product ID (e.g. 'K15VC'), call 'getProductAnalysis' with that ID.\n" +
         "  • If the worker described a product by name (e.g. 'ceiling fan'), call 'searchProductByDescription' first.\n" +
-        "  • If 'searchProductByDescription' returns EXACTLY ONE product, call 'getProductAnalysis' with that ID immediately.\n" +
+        "  • If 'searchProductByDescription' returns EXACTLY ONE product, show the result to the worker and ask them to confirm it is the correct product BEFORE calling 'getProductAnalysis'. Do NOT auto-proceed.\n" +
         "  • If 'searchProductByDescription' returns MORE THAN ONE product, list all results to the worker and ask which one arrived. STOP — do NOT call 'getProductAnalysis' until the worker picks one.\n" +
         "  • Do NOT proceed until you have a confirmed product ID.\n\n" +
 
@@ -83,7 +84,12 @@ public class AIAgent {
         "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
         "  • NEVER call updateBinStatus right after findOptimalBin — it WILL be rejected.\n\n" +
 
-        "Refuse new tasks until the current one is confirmed.";
+        "Refuse new tasks until the current one is confirmed.\n\n" +
+
+        "OUT OF SCOPE:\n" +
+        "  • If the worker asks anything unrelated to warehouse operations (directions, personal questions, general knowledge, etc.), respond ONLY with plain text:\n" +
+        "    \"I can only assist with warehouse tasks such as deliveries, inventory lookups, and emergencies.\"\n" +
+        "  • Do NOT call any tool for out-of-scope questions.";
 
     private static final String TOOL_ERROR_PREFIX = "TOOL_DISPATCH_ERROR:";
     private static final JsonArray conversationHistory = new JsonArray();
@@ -331,6 +337,7 @@ public class AIAgent {
             boolean accidentReported = false;
             boolean aisleCleared = false;
             boolean quantityMissing = false;
+            boolean coCheckRequired = false;
 
             for (JsonElement toolEl : toolCalls) {
                 JsonObject toolCallObj = toolEl.getAsJsonObject();
@@ -362,6 +369,9 @@ public class AIAgent {
                     }
                     if (toolOutput.contains("QUANTITY_MISSING")) {
                         quantityMissing = true;
+                    }
+                    if (toolOutput.contains("CO_CHECK_REQUIRED")) {
+                        coCheckRequired = true;
                     }
                 } else if ("reportAccident".equals(funcName)) {
                     accidentReported = true;
@@ -425,6 +435,20 @@ public class AIAgent {
                         } catch (NumberFormatException ignored) {}
                     }
                 }
+            }
+
+            // Model skipped the CO check — re-enable tools and inject a corrective nudge so it
+            // calls readLocalCustomerOrder instead of outputting raw JSON in text-only mode.
+            if (coCheckRequired) {
+                JsonObject nudge = new JsonObject();
+                nudge.addProperty("role", "user");
+                nudge.addProperty("content",
+                    "[SYSTEM CO CHECK REQUIRED] You skipped STEP 2. You MUST call 'readLocalCustomerOrder' NOW before doing anything else. Do not call findOptimalBin again until after the CO check.");
+                conversationHistory.add(nudge);
+                System.out.println("[Zai is correcting workflow — running CO check...]");
+                try { Thread.sleep(2500); } catch (InterruptedException ignored) {}
+                processAIResponse(callAPI(conversationHistory), depth + 1);
+                return;
             }
 
             // Gate: the CO check can't run without a known arrival quantity. Ask the worker
@@ -605,6 +629,12 @@ public class AIAgent {
 
                 case "searchProductByDescription":
                     String searchResult = WarehouseSkills.searchProductByDescription(args.get("keyword").getAsString());
+                    if (searchResult.startsWith("No products found")) {
+                        return "No products found matching that description. "
+                             + "STOP — do NOT call listWarehouseInventory or any other tool. "
+                             + "Tell the worker: \"I couldn't find a product matching that description. "
+                             + "Please check the product name or ID and try again.\"";
+                    }
                     Matcher m = Pattern
                         .compile("(?i)(?:product[:\\s]+|id[:\\s]+)([A-Z0-9][A-Z0-9\\-]{1,14})")
                         .matcher(searchResult);
@@ -678,6 +708,7 @@ public class AIAgent {
                         lastPoCustomer          = "";
                         lastArrivingQuantity    = -1;
                         poCheckDone             = false;
+                        allToPackingCounter     = false;
                         remainingQtyToBin       = 0;
                         pendingUpdateCount      = 0;
                         tentativeBins.clear();
@@ -757,25 +788,25 @@ public class AIAgent {
         return false;
     }
 
+    private static final Pattern CONFIRMATION_WORDS = Pattern.compile(
+        "\\b(done|placed|confirmed|ok|yes)\\b", Pattern.CASE_INSENSITIVE);
+
     private static boolean workerJustConfirmed() {
         for (int i = conversationHistory.size() - 1; i >= 0; i--) {
             JsonObject msg = conversationHistory.get(i).getAsJsonObject();
             if (!msg.has("role") || !msg.has("content")) continue;
             if ("user".equals(msg.get("role").getAsString())) {
-                String content = msg.get("content").getAsString().toLowerCase();
-                if (content.startsWith("[system")) continue;
-                return content.contains("done")
-                    || content.contains("placed")
-                    || content.contains("confirmed")
-                    || content.contains("ok")
-                    || content.contains("yes");
+                String content = msg.get("content").getAsString();
+                if (content.toLowerCase().startsWith("[system")) continue;
+                return CONFIRMATION_WORDS.matcher(content).find();
             }
         }
         return false;
     }
 
     private static final String[] GREETING_TOKENS = {
-        "hi", "hello", "hey", "morning", "afternoon", "evening", "yo", "sup", "howdy", "hiya", "greetings"
+        "hi", "hello", "hey", "morning", "afternoon", "evening", "yo", "sup", "howdy", "hiya", "greetings",
+        "bro", "mate", "dude", "man", "guys", "oi", "wassup", "whatsup"
     };
 
     private static boolean isGreeting(String input) {
@@ -855,6 +886,8 @@ public class AIAgent {
 
             if (userInput.equalsIgnoreCase("cancel") || userInput.equalsIgnoreCase("reset")) {
                 lastArrivingProductId      = "";
+                lastArrivingProductName    = "";
+                lastPoCustomer             = "";
                 lastArrivingQuantity       = -1;
                 poCheckDone                = false;
                 allToPackingCounter        = false;
@@ -870,7 +903,7 @@ public class AIAgent {
             }
 
             int prevArrivingQuantity = lastArrivingQuantity;
-            tryUpdateArrivingQuantity(userInput);
+            if (!allToPackingCounter) tryUpdateArrivingQuantity(userInput);
             boolean justReceivedQuantity =
                 awaitingQuantityFromWorker && prevArrivingQuantity <= 0 && lastArrivingQuantity > 0;
 
@@ -895,6 +928,7 @@ public class AIAgent {
                         int comma = analysis.indexOf(",");
                         if (comma > 9) productLabel = analysis.substring(9, comma).trim();
                     }
+                    lastArrivingProductName = productLabel;
                     reply = "Found: " + analysis + ". How many units of " + productLabel + " arrived?";
                 } else {
                     String searchResult = WarehouseSkills.searchProductByDescription(input);
@@ -920,6 +954,7 @@ public class AIAgent {
                                 int comma = detail.indexOf(",");
                                 if (comma > 9) productLabel = detail.substring(9, comma).trim();
                             }
+                            lastArrivingProductName = productLabel;
                             reply = "Found: " + detail + ". How many units of " + productLabel + " arrived?";
                         } else if (sCount > 1) {
                             reply = "I found multiple products matching \"" + input + "\":\n"
