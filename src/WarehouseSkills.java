@@ -213,6 +213,23 @@ public class WarehouseSkills {
         return "SUCCESS: Area '" + location + "' is now clear (" + binsCleared + " bins unblocked). All managers notified via Telegram.";
     }
 
+    // Sends the end-of-shift report to all managers via Telegram.
+    public static void notifyShiftReport(String plainReport) {
+        String[] lines = plainReport.split("\n");
+        StringBuilder html = new StringBuilder();
+        for (String line : lines) {
+            String escaped = escapeHtml(line);
+            if (line.startsWith("📊") || line.startsWith("📦") || line.startsWith("🚨") || line.startsWith("✅")) {
+                html.append("<b>").append(escaped).append("</b>\n");
+            } else {
+                html.append(escaped).append("\n");
+            }
+        }
+        String error = notifyAllManagers(html.toString().trim());
+        if (error != null) System.out.println("[SHIFT REPORT] Telegram failed: " + error);
+        else System.out.println("[SHIFT REPORT] Sent to all managers.");
+    }
+
     // Notifies all managers when a PO match is found for arriving stock.
     public static void notifyPoArrival(String productId, String customer, String poQty, String priority, int arrivedQty) {
         String message = "<b>📦 PURCHASE ORDER ARRIVAL</b>\n" +

@@ -4,6 +4,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Scanner;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.nio.file.Files;
@@ -83,12 +85,25 @@ public class AIAgent {
     private static final String TOOL_ERROR_PREFIX = "TOOL_DISPATCH_ERROR:";
     private static final JsonArray conversationHistory = new JsonArray();
 
-    private static String lastArrivingProductId = "";
-    private static int lastArrivingQuantity = -1;
+    private static String lastArrivingProductId   = "";
+    private static String lastArrivingProductName = "";
+    private static String lastPoCustomer          = "";
+    private static int    lastArrivingQuantity    = -1;
     private static boolean awaitingArrivalProduct = false;
-    private static String pendingBareProductId = "";
-    private static boolean poCheckDone = false;
-    private static boolean allToPackingCounter = false; // true when PO match covers all arriving units
+    private static String pendingBareProductId    = "";
+    private static boolean poCheckDone            = false;
+    private static boolean allToPackingCounter    = false;
+
+    // ── Shift log ─────────────────────────────────────────────────────────────
+    private static final long         shiftStartTime = System.currentTimeMillis();
+    private static final List<String> deliveryLog    = new ArrayList<>();
+    private static final List<String> accidentLog    = new ArrayList<>();
+    private static final List<String> clearedLog     = new ArrayList<>();
+
+    private static String now() {
+        return java.time.LocalTime.now()
+               .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"));
+    }
 
     private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
     private static final Pattern EMERGENCY_KEYWORDS = Pattern.compile(
@@ -363,6 +378,7 @@ public class AIAgent {
                             else if (line.startsWith("Priority:")) priority = line.substring("Priority:".length()).trim();
                         }
                         WarehouseSkills.notifyPoArrival(lastArrivingProductId, customer, poQty, priority, lastArrivingQuantity);
+                        lastPoCustomer = customer;
 
                         // Detect "all to Packing Counter" case: arriving qty <= PO qty means no binning
                         try {
@@ -466,7 +482,12 @@ public class AIAgent {
                 case "getProductAnalysis":
                     lastArrivingProductId = args.get("productId").getAsString().toUpperCase();
                     System.out.println("[SYSTEM] AI resolved product ID: " + lastArrivingProductId);
-                    return WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
+                    String pa = WarehouseSkills.getProductAnalysis(args.get("productId").getAsString());
+                    if (pa.startsWith("Product: ")) {
+                        int c = pa.indexOf(",");
+                        if (c > 9) lastArrivingProductName = pa.substring(9, c).trim();
+                    }
+                    return pa;
 
                 case "findOptimalBin":
                     if (lastArrivingQuantity <= 0) {
@@ -533,12 +554,19 @@ public class AIAgent {
                             args.get("status").getAsString(),
                             args.get("productId").getAsString());
                     if (!binResult.startsWith(TOOL_ERROR_PREFIX)) {
-                        lastArrivingProductId  = "";
-                        lastArrivingQuantity   = -1;
-                        poCheckDone            = false;
-                        allToPackingCounter    = false;
-                        awaitingArrivalProduct = false;
-                        pendingBareProductId   = "";
+                        String logName = lastArrivingProductName.isEmpty()
+                            ? lastArrivingProductId
+                            : lastArrivingProductName + " (" + lastArrivingProductId + ")";
+                        deliveryLog.add("[" + now() + "] " + lastArrivingQuantity + "x " + logName
+                            + " → Bin " + args.get("binId").getAsString());
+                        lastArrivingProductId   = "";
+                        lastArrivingProductName = "";
+                        lastPoCustomer          = "";
+                        lastArrivingQuantity    = -1;
+                        poCheckDone             = false;
+                        allToPackingCounter     = false;
+                        awaitingArrivalProduct  = false;
+                        pendingBareProductId    = "";
                     }
                     return binResult;
 
@@ -552,14 +580,22 @@ public class AIAgent {
                             args.get("location").getAsString(),
                             args.get("description").getAsString());
                     if (!accidentResult.startsWith(TOOL_ERROR_PREFIX)) {
-                        lastArrivingProductId = "";
-                        lastArrivingQuantity = -1;
-                        poCheckDone = false;
+                        accidentLog.add("[" + now() + "] " + args.get("location").getAsString()
+                            + " — " + args.get("description").getAsString());
+                        lastArrivingProductId   = "";
+                        lastArrivingProductName = "";
+                        lastPoCustomer          = "";
+                        lastArrivingQuantity    = -1;
+                        poCheckDone             = false;
                     }
                     return accidentResult;
 
                 case "clearAisle":
-                    return WarehouseSkills.clearAisle(args.get("location").getAsString());
+                    String clearResult = WarehouseSkills.clearAisle(args.get("location").getAsString());
+                    if (!clearResult.startsWith(TOOL_ERROR_PREFIX)) {
+                        clearedLog.add("[" + now() + "] " + args.get("location").getAsString());
+                    }
+                    return clearResult;
 
                 default:
                     return TOOL_ERROR_PREFIX + " Unknown tool '" + funcName + "'";
@@ -644,6 +680,34 @@ public class AIAgent {
         return ARRIVAL_SIGNAL.matcher(input).find() && !PRODUCT_CODE_IN_MSG.matcher(input).find();
     }
 
+    private static String generateShiftReport() {
+        long elapsed = System.currentTimeMillis() - shiftStartTime;
+        long hours   = elapsed / 3600000;
+        long minutes = (elapsed % 3600000) / 60000;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("📊 SHIFT REPORT\n");
+        sb.append("🕐 Duration: ").append(hours).append("h ").append(minutes).append("m\n");
+
+        if (deliveryLog.isEmpty() && accidentLog.isEmpty() && clearedLog.isEmpty()) {
+            sb.append("\nNo events recorded this shift.");
+        } else {
+            if (!deliveryLog.isEmpty()) {
+                sb.append("\n📦 Deliveries (").append(deliveryLog.size()).append(")\n");
+                for (String e : deliveryLog) sb.append("  • ").append(e).append("\n");
+            }
+            if (!accidentLog.isEmpty()) {
+                sb.append("\n🚨 Accidents (").append(accidentLog.size()).append(")\n");
+                for (String e : accidentLog) sb.append("  • ").append(e).append("\n");
+            }
+            if (!clearedLog.isEmpty()) {
+                sb.append("\n✅ Aisles Cleared (").append(clearedLog.size()).append(")\n");
+                for (String e : clearedLog) sb.append("  • ").append(e).append("\n");
+            }
+        }
+        return sb.toString().trim();
+    }
+
     public static void main(String[] args) {
         Scanner scanner = new Scanner(System.in);
         System.out.println("==============================================");
@@ -655,6 +719,13 @@ public class AIAgent {
             String userInput = scanner.nextLine().trim();
             if (userInput.equalsIgnoreCase("exit")) break;
             if (userInput.isEmpty()) continue;
+
+            if (userInput.equalsIgnoreCase("report")) {
+                String report = generateShiftReport();
+                System.out.println("\n" + report);
+                WarehouseSkills.notifyShiftReport(report);
+                continue;
+            }
 
             if (userInput.equalsIgnoreCase("cancel") || userInput.equalsIgnoreCase("reset")) {
                 lastArrivingProductId  = "";
@@ -799,16 +870,24 @@ public class AIAgent {
                 boolean confirmed = lower.contains("done") || lower.contains("placed")
                         || lower.contains("confirmed") || lower.contains("ok") || lower.contains("yes");
                 if (confirmed) {
+                    String logName = lastArrivingProductName.isEmpty()
+                        ? lastArrivingProductId
+                        : lastArrivingProductName + " (" + lastArrivingProductId + ")";
+                    String customerSuffix = lastPoCustomer.isEmpty() ? "" : " (" + lastPoCustomer + ")";
+                    deliveryLog.add("[" + now() + "] " + lastArrivingQuantity + "x " + logName
+                        + " → Packing Counter" + customerSuffix);
                     String reply = "Delivery complete. All units have been sent to the Packing Counter. Good work!";
                     System.out.println("\nZai: " + reply);
                     JsonObject uMsg = new JsonObject(); uMsg.addProperty("role", "user"); uMsg.addProperty("content", userInput); conversationHistory.add(uMsg);
                     JsonObject aMsg = new JsonObject(); aMsg.addProperty("role", "assistant"); aMsg.addProperty("content", reply); conversationHistory.add(aMsg);
-                    lastArrivingProductId = "";
-                    lastArrivingQuantity  = -1;
-                    poCheckDone           = false;
-                    allToPackingCounter   = false;
-                    awaitingArrivalProduct = false;
-                    pendingBareProductId  = "";
+                    lastArrivingProductId   = "";
+                    lastArrivingProductName = "";
+                    lastPoCustomer          = "";
+                    lastArrivingQuantity    = -1;
+                    poCheckDone             = false;
+                    allToPackingCounter     = false;
+                    awaitingArrivalProduct  = false;
+                    pendingBareProductId    = "";
                     continue;
                 }
             }
