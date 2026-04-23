@@ -87,6 +87,8 @@ public class AIAgent {
     private static int lastArrivingQuantity = -1;
     private static boolean awaitingArrivalProduct = false;
     private static String pendingBareProductId = "";
+    private static boolean poCheckDone = false;
+    private static boolean allToPackingCounter = false; // true when PO match covers all arriving units
 
     private static final Pattern STANDALONE_NUMBER = Pattern.compile("\\b(\\d{1,6})\\b");
     private static final Pattern ARRIVAL_SIGNAL = Pattern.compile(
@@ -346,6 +348,34 @@ public class AIAgent {
                     poCheckMsg.addProperty("content",
                         "[SYSTEM PO CHECK — READ THIS BEFORE DOING ANYTHING ELSE]\n" + matchResult);
                     conversationHistory.add(poCheckMsg);
+
+                    // Notify managers via Telegram when arriving stock matches a PO
+                    if (matchResult.startsWith("[PO MATCH FOUND]")) {
+                        String customer = "Unknown";
+                        String poQty    = "?";
+                        String priority = "Standard";
+                        for (String line : matchResult.split("\\r?\\n")) {
+                            if (line.startsWith("Customer:")) customer = line.substring("Customer:".length()).trim();
+                            else if (line.startsWith("PO Qty  :")) poQty = line.substring("PO Qty  :".length()).trim();
+                            else if (line.startsWith("Priority:")) priority = line.substring("Priority:".length()).trim();
+                        }
+                        WarehouseSkills.notifyPoArrival(lastArrivingProductId, customer, poQty, priority, lastArrivingQuantity);
+
+                        // Detect "all to Packing Counter" case: arriving qty <= PO qty means no binning
+                        try {
+                            int poQtyNum = Integer.parseInt(poQty.replaceAll("[^0-9]", ""));
+                            if (lastArrivingQuantity <= poQtyNum) {
+                                allToPackingCounter = true;
+                                JsonObject packMsg = new JsonObject();
+                                packMsg.addProperty("role", "user");
+                                packMsg.addProperty("content",
+                                    "[SYSTEM PACKING ONLY] All " + lastArrivingQuantity + " units go to the Packing Counter for "
+                                    + customer + ". Do NOT call findOptimalBin or updateBinStatus. "
+                                    + "Tell the worker to take all units to the Packing Counter and reply 'done'. No further tool calls are needed.");
+                                conversationHistory.add(packMsg);
+                            }
+                        } catch (NumberFormatException ignored) {}
+                    }
                 }
             }
 
@@ -426,6 +456,7 @@ public class AIAgent {
                         return TOOL_ERROR_PREFIX +
                                " QUANTITY_MISSING. Do not check the PO yet. Ask the worker how many units arrived first.";
                     }
+                    poCheckDone = true;
                     return LocalFileTools.readLocalPurchaseOrder(
                             args.has("filePath") ? args.get("filePath").getAsString() : "PO_April20.csv");
 
@@ -442,6 +473,10 @@ public class AIAgent {
                     if (lastArrivingProductId.isEmpty()) {
                         return TOOL_ERROR_PREFIX +
                                " PRODUCT_MISSING. Call getProductAnalysis (or searchProductByDescription) first.";
+                    }
+                    if (!poCheckDone) {
+                        return TOOL_ERROR_PREFIX +
+                               " PO_CHECK_REQUIRED. Call readLocalPurchaseOrder before finding a bin.";
                     }
                     // Java computes weight/volume/velocity itself from the DB so the model can't
                     // mis-multiply or echo stale numbers. The args passed in are ignored.
@@ -495,8 +530,12 @@ public class AIAgent {
                             args.get("status").getAsString(),
                             args.get("productId").getAsString());
                     if (!binResult.startsWith(TOOL_ERROR_PREFIX)) {
-                        lastArrivingProductId = "";
-                        lastArrivingQuantity = -1;
+                        lastArrivingProductId  = "";
+                        lastArrivingQuantity   = -1;
+                        poCheckDone            = false;
+                        allToPackingCounter    = false;
+                        awaitingArrivalProduct = false;
+                        pendingBareProductId   = "";
                     }
                     return binResult;
 
@@ -507,6 +546,7 @@ public class AIAgent {
                     if (!accidentResult.startsWith(TOOL_ERROR_PREFIX)) {
                         lastArrivingProductId = "";
                         lastArrivingQuantity = -1;
+                        poCheckDone = false;
                     }
                     return accidentResult;
 
@@ -716,6 +756,27 @@ public class AIAgent {
                 aMsg.addProperty("content", reply);
                 conversationHistory.add(aMsg);
                 continue;
+            }
+
+            // When all units go to the Packing Counter, no bin update is needed.
+            // Intercept the worker's confirmation directly and reset state.
+            if (allToPackingCounter) {
+                String lower = userInput.toLowerCase().trim();
+                boolean confirmed = lower.contains("done") || lower.contains("placed")
+                        || lower.contains("confirmed") || lower.contains("ok") || lower.contains("yes");
+                if (confirmed) {
+                    String reply = "Delivery complete. All units have been sent to the Packing Counter. Good work!";
+                    System.out.println("\nZai: " + reply);
+                    JsonObject uMsg = new JsonObject(); uMsg.addProperty("role", "user"); uMsg.addProperty("content", userInput); conversationHistory.add(uMsg);
+                    JsonObject aMsg = new JsonObject(); aMsg.addProperty("role", "assistant"); aMsg.addProperty("content", reply); conversationHistory.add(aMsg);
+                    lastArrivingProductId = "";
+                    lastArrivingQuantity  = -1;
+                    poCheckDone           = false;
+                    allToPackingCounter   = false;
+                    awaitingArrivalProduct = false;
+                    pendingBareProductId  = "";
+                    continue;
+                }
             }
 
             if (isGenericArrival(userInput) && lastArrivingProductId.isEmpty()) {
