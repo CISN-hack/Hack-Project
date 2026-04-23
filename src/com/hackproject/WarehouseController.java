@@ -1,6 +1,7 @@
 package com.hackproject;
 
 import io.javalin.Javalin;
+import io.javalin.json.JavalinGson;
 import java.util.Map;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -11,41 +12,25 @@ public class WarehouseController {
 
         // 1. Start the server with proper CORS for React
         Javalin app = Javalin.create(config -> {
+            config.jsonMapper(new JavalinGson()); // Tells Javalin how to read JSON
             config.bundledPlugins.enableCors(cors -> {
                 cors.addRule(it -> it.anyHost()); 
             });
         }).start(8080);
 
-
-        // 2. Inventory Data (for Grid & Capacity tabs)
-        // This replaces your @PostMapping("/chat")
-        app.post("/api/chat", ctx -> {
-            // 1. Get the message from Frontend
-            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
-            String userMessage = request.get("message");
-
-            System.out.println("Received message from Frontend: " + userMessage);
-
-            // 2. Get AI Response
-            String aiReply = AIAgent.getAIResponseForWeb(userMessage);
-
-            // 3. Send back as JSON
-            ctx.json(Map.of("reply", aiReply));
-        });
-        
-        // This sends the bin occupancy data to your "Grid" and "Capacity" tabs
+        // 2. GET: Inventory Data (Capacity & Grid)
         app.get("/api/inventory", ctx -> {
             ctx.json(DatabaseManager.getInventoryData());
         });
 
-        // 3. Sales Velocity Data (for Pulse/Velocity tab)
+        // 3. GET: Sales Velocity Data (Pulse/Velocity tab)
         app.get("/api/velocity", ctx -> {
             ctx.json(DatabaseManager.getSalesVelocity());
         });
 
-        // 4. AI Chat Endpoint
+        // 4. POST: AI Chat Endpoint (ONLY ONE DEFINITION)
         app.post("/api/chat", ctx -> {
-            Map<String, String> request = gson.fromJson(ctx.body(), Map.class);
+            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
             String userMessage = request.get("message");
 
             System.out.println("Processing message: " + userMessage);
