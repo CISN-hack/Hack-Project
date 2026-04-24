@@ -17,6 +17,9 @@ javac -d bin -cp "lib/*" src/com/hackproject/*.java
 # Run the interactive agent (requires tools.json, CO_April20.csv, and warehouse_demo.db in cwd)
 java --enable-native-access=ALL-UNNAMED -cp "lib/*;bin" com.hackproject.AIAgent
 
+# Run the HTTP server for the React frontend (binds :8080, exposes /api/inventory, /api/velocity, /api/chat with CORS open to any host)
+java --enable-native-access=ALL-UNNAMED -cp "lib/*;bin" com.hackproject.WarehouseController
+
 # Rebuild the SQLite schema + seed data (run these from the project root; each drops/recreates its table)
 java -cp "lib/*;bin" com.hackproject.WarehouseDatabaseSetup
 java -cp "lib/*;bin" com.hackproject.BinDatabaseSetup
@@ -82,7 +85,9 @@ Three additional statics manage batch mode: `batchQueue` (a `LinkedList<BatchIte
 
 ### Modules
 
-- `AIAgent.java` — REPL, LLM HTTP call (with 429 retry/backoff), tool dispatch, state machine, all the guards above.
+- `AIAgent.java` — REPL, LLM HTTP call (with 429 retry/backoff), tool dispatch, state machine, all the guards above. Also exposes `getAIResponseForWeb(String)` for the HTTP server to call.
+- `WarehouseController.java` — Javalin HTTP server on port 8080 (CORS open to any host). Three endpoints consumed by the React frontend: `GET /api/inventory` and `GET /api/velocity` delegate to `DatabaseManager`; `POST /api/chat` calls `AIAgent.getAIResponseForWeb`. This is the canonical web entry point — a prior `AppServer.java` that only served `/api/chat` has been removed.
+- `DatabaseManager.java` — read-only SQLite queries for the frontend: `getInventoryData()` (bins + capacity/grid) and `getSalesVelocity()` (sales/pulse tab). Used only by `WarehouseController`, not by the AI tools.
 - `WarehouseSkills.java` — product/bin lookups, `findOptimalBin` SQL (accessibility score keyed to sales velocity), Telegram notification helper. `reportAccident`/`clearAisle` delegate DB writes to `InventoryTools`.
 - `InventoryTools.java` — all writes to the `Bins` table: `updateBinStatus` (two-slot `Product1`/`Product2` model, auto-computes `Half`/`Full`), `blockBinsByLocation`, `clearBinsByLocation` (location parsing normalizes `Aisle 2` → `A2` prefix).
 - `LocalFileTools.java` — thin CSV file reader.
