@@ -6,39 +6,37 @@ import java.util.*;
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
-    // Query for Capacity/Grid data
+    // Query for Capacity/Grid data. bin_id format: A{aisle}-S{shelf}-L{level}-B{bin}
     public static List<Map<String, Object>> getInventoryData() {
         List<Map<String, Object>> data = new ArrayList<>();
-        // FIX: Added Product1 and Product2 to the SELECT statement
-        String sql = "SELECT bin_id, status, blocked_status, Product1, Product2 FROM Bins";
+        String sql = "SELECT aisle, shelf, level, bin, capacity, status FROM inventory";
         
         try (Connection conn = DriverManager.getConnection(DB_URL);
-            Statement stmt = conn.createStatement();
-            ResultSet rs = stmt.executeQuery(sql)) {
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
             
             while (rs.next()) {
-                Map<String, Object> row = new HashMap<>();
                 String binId = rs.getString("bin_id");
-
                 String[] parts = binId.split("-");
-                if (parts.length == 4) {
-                    row.put("aisle", parts[0].trim());
-                    row.put("shelf", parts[1].trim());
-                    row.put("level", parts[2].trim());
-                    row.put("bin", parts[3].trim());
+                if (parts.length != 4) continue;
+
+                String occupancy = rs.getString("status");        // Empty | Half | Full
+                String blocked = rs.getString("blocked_status");  // Blocked | Clear
+
+                int capacity;
+                switch (occupancy == null ? "" : occupancy) {
+                    case "Full": capacity = 100; break;
+                    case "Half": capacity = 50;  break;
+                    default:     capacity = 0;   break;
                 }
 
-                // These will now work because they are in the SELECT above
-                row.put("product1", rs.getString("Product1")); 
-                row.put("product2", rs.getString("Product2"));
-                row.put("blocked_status", rs.getString("blocked_status")); 
-                
-                String currentStatus = rs.getString("status");
-                int capacity = 0;
-                if ("Half".equalsIgnoreCase(currentStatus)) capacity = 50;
-                else if ("Full".equalsIgnoreCase(currentStatus)) capacity = 100;
-                
-                row.put("capacity", capacity);
+                Map<String, Object> row = new HashMap<>();
+                row.put("aisle", rs.getString("aisle"));
+                row.put("shelf", rs.getString("shelf"));
+                row.put("level", rs.getString("level"));
+                row.put("bin", rs.getString("bin"));
+                row.put("capacity", rs.getInt("capacity"));
+                row.put("status", rs.getString("status")); // e.g., 'active' or 'OFF'
                 data.add(row);
             }
         } catch (SQLException e) { 

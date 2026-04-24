@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\Teoh Jun Hong\\\\Documents\\\\CISN hackathon\\\\Frontend\\\\src\" -Recurse -File -Force | ForEach-Object { $_.FullName.Replace\\(\"c:\\\\Users\\\\Teoh Jun Hong\\\\Documents\\\\CISN hackathon\\\\Frontend\\\\\", \"\"\\) })"
+    ]
+  }
+}
