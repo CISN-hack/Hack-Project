@@ -42,16 +42,26 @@ public class DatabaseManager {
         return data;
     }
 
-    // Query for Velocity/Sales data
+    // Query for Velocity/Sales data. Growth = (recent half) vs (earlier half) of the Sales date range.
     public static List<Map<String, Object>> getSalesVelocity() {
     List<Map<String, Object>> data = new ArrayList<>();
-    
-    // Using UPPER and TRIM to ignore case and hidden spaces
-    String sql = "SELECT p.product_name AS name, SUM(s.quantity) AS velocity " +
-                 "FROM Sales s " +
-                 "JOIN Products p ON TRIM(UPPER(s.product_id)) = TRIM(UPPER(p.product_id)) " +
-                 "GROUP BY p.product_name " +
-                 "ORDER BY velocity DESC LIMIT 5";
+
+    // Midpoint splits the Sales date range in two; products with more sales in
+    // the recent half are trending up, fewer are trending down.
+    String sql =
+        "WITH mid AS (" +
+        "  SELECT date(MIN(sale_date), '+' || " +
+        "    CAST((julianday(MAX(sale_date)) - julianday(MIN(sale_date))) / 2 AS INTEGER) || " +
+        "    ' days') AS mid_date FROM Sales" +
+        ") " +
+        "SELECT p.product_name AS name, " +
+        "       SUM(s.quantity) AS velocity, " +
+        "       SUM(CASE WHEN s.sale_date >  (SELECT mid_date FROM mid) THEN s.quantity ELSE 0 END) AS recent_qty, " +
+        "       SUM(CASE WHEN s.sale_date <= (SELECT mid_date FROM mid) THEN s.quantity ELSE 0 END) AS prev_qty " +
+        "FROM Sales s " +
+        "JOIN Products p ON TRIM(UPPER(s.product_id)) = TRIM(UPPER(p.product_id)) " +
+        "GROUP BY p.product_name " +
+        "ORDER BY velocity DESC LIMIT 5";
 
     try (Connection conn = DriverManager.getConnection(DB_URL);
          Statement stmt = conn.createStatement();
@@ -60,14 +70,25 @@ public class DatabaseManager {
         while (rs.next()) {
             Map<String, Object> row = new HashMap<>();
             String name = rs.getString("name");
-            int velocity = rs.getInt("velocity"); // Ensure this is getInt!
-            
-            // This will print to your JAVA terminal so we can see if data exists
-            System.out.println("✅ BACKEND FOUND: " + name + " | Qty: " + velocity);
-            
+            int velocity = rs.getInt("velocity");
+            int recent = rs.getInt("recent_qty");
+            int prev   = rs.getInt("prev_qty");
+
+            String growth;
+            if (prev == 0 && recent == 0) {
+                growth = "0%";
+            } else if (prev == 0) {
+                growth = "+NEW";
+            } else {
+                int pct = (int) Math.round(((recent - prev) / (double) prev) * 100);
+                growth = (pct >= 0 ? "+" : "") + pct + "%";
+            }
+
+            System.out.println("✅ BACKEND FOUND: " + name + " | Qty: " + velocity + " | Growth: " + growth);
+
             row.put("name", name);
             row.put("velocity", velocity);
-            row.put("growth", "+12%");
+            row.put("growth", growth);
             data.add(row);
         }
     } catch (SQLException e) {
