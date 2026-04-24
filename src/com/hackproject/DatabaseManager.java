@@ -9,7 +9,12 @@ public class DatabaseManager {
     // Query for Capacity/Grid data. bin_id format: A{aisle}-S{shelf}-L{level}-B{bin}
     public static List<Map<String, Object>> getInventoryData() {
         List<Map<String, Object>> data = new ArrayList<>();
-        String sql = "SELECT bin_id, status, blocked_status FROM Bins";
+        String sql =
+            "SELECT b.bin_id, b.blocked_status, b.max_weight_capacity, " +
+            "  COALESCE(p1.weight_kg * b.Product1_qty, 0) + COALESCE(p2.weight_kg * b.Product2_qty, 0) AS used_weight " +
+            "FROM Bins b " +
+            "LEFT JOIN Products p1 ON b.Product1 = p1.product_id " +
+            "LEFT JOIN Products p2 ON b.Product2 = p2.product_id";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement();
@@ -20,15 +25,12 @@ public class DatabaseManager {
                 String[] parts = binId.split("-");
                 if (parts.length != 4) continue;
 
-                String occupancy = rs.getString("status");        // Empty | Half | Full
-                String blocked = rs.getString("blocked_status");  // Blocked | Clear
+                double maxWeight  = rs.getDouble("max_weight_capacity");
+                double usedWeight = rs.getDouble("used_weight");
+                int capacity = maxWeight > 0
+                    ? (int) Math.round(usedWeight / maxWeight * 100) : 0;
 
-                int capacity;
-                switch (occupancy == null ? "" : occupancy) {
-                    case "Full": capacity = 100; break;
-                    case "Half": capacity = 50;  break;
-                    default:     capacity = 0;   break;
-                }
+                String blocked = rs.getString("blocked_status");
 
                 Map<String, Object> row = new HashMap<>();
                 row.put("aisle", parts[0]);
@@ -36,6 +38,8 @@ public class DatabaseManager {
                 row.put("level", parts[2]);
                 row.put("bin",   parts[3]);
                 row.put("capacity", capacity);
+                row.put("usedWeight", Math.round(usedWeight * 10.0) / 10.0);
+                row.put("maxCapacity", maxWeight);
                 row.put("status", "Blocked".equals(blocked) ? "OFF" : "active");
                 data.add(row);
             }

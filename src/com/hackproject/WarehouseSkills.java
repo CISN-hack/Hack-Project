@@ -11,6 +11,12 @@ import java.io.IOException;
 public class WarehouseSkills {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
+    // Fix 2: single shared HttpClient for all Telegram calls
+    private static final java.net.http.HttpClient HTTP_CLIENT = java.net.http.HttpClient.newHttpClient();
+
+    // Fix 5: cache product analysis results for the duration of the session
+    private static final java.util.Map<String, String> ANALYSIS_CACHE = new java.util.HashMap<>();
+
     // ── Telegram ──────────────────────────────────────────────────────────────
     private static final String BOT_TOKEN = "8636072818:AAG4o-SaBaFss43B55lZDluadOtLF8jVsjM";
     // Add or remove chat IDs here to manage the manager notification list
@@ -20,6 +26,8 @@ public class WarehouseSkills {
     };
 
     public static String getProductAnalysis(String productId) {
+        String cached = ANALYSIS_CACHE.get(productId);
+        if (cached != null) return cached;
         String sql = "SELECT p.*, (SELECT SUM(quantity) FROM Sales WHERE product_id = p.product_id) as velocity " +
                      "FROM Products p WHERE p.product_id = ?";
         try (Connection conn = DriverManager.getConnection(DB_URL);
@@ -27,25 +35,27 @@ public class WarehouseSkills {
             pstmt.setString(1, productId);
             ResultSet rs = pstmt.executeQuery();
             if (rs.next()) {
-                return String.format("Product: %s, Weight: %.2fkg, Volume: %.2fm3, Velocity: %d",
+                String result = String.format("Product: %s, Weight: %.2fkg, Volume: %.2fm3, Velocity: %d",
                        rs.getString("product_name"),
                        rs.getDouble("weight_kg"),
                        rs.getDouble("volume_m3"),
                        rs.getInt("velocity"));
+                ANALYSIS_CACHE.put(productId, result);
+                return result;
             }
         } catch (SQLException e) { return "DB Error: " + e.getMessage(); }
         return "Product not found.";
     }
 
-    // Full-warehouse inventory: every product currently in a bin, grouped with its bin list.
+    // Full-warehouse inventory: every product currently in a bin, grouped with its bin list and total units.
     public static String listWarehouseInventory() {
         String sql =
             "SELECT b.pid AS pid, p.product_name AS product_name, " +
-            "       GROUP_CONCAT(b.bin_id, ', ') AS bins, COUNT(*) AS bin_count " +
+            "       GROUP_CONCAT(b.bin_id, ', ') AS bins, COUNT(*) AS bin_count, SUM(b.qty) AS total_qty " +
             "FROM ( " +
-            "  SELECT Product1 AS pid, bin_id FROM Bins WHERE Product1 IS NOT NULL AND Product1 != '' " +
+            "  SELECT Product1 AS pid, bin_id, Product1_qty AS qty FROM Bins WHERE Product1 IS NOT NULL AND Product1 != '' " +
             "  UNION ALL " +
-            "  SELECT Product2 AS pid, bin_id FROM Bins WHERE Product2 IS NOT NULL AND Product2 != '' " +
+            "  SELECT Product2 AS pid, bin_id, Product2_qty AS qty FROM Bins WHERE Product2 IS NOT NULL AND Product2 != '' " +
             ") b " +
             "LEFT JOIN Products p ON p.product_id = b.pid " +
             "GROUP BY b.pid, p.product_name " +
@@ -62,9 +72,11 @@ public class WarehouseSkills {
                 String name = rs.getString("product_name");
                 String bins = rs.getString("bins");
                 int binCount = rs.getInt("bin_count");
+                int totalQty = rs.getInt("total_qty");
                 sb.append("- ").append(pid);
                 if (name != null) sb.append(" (").append(name).append(")");
-                sb.append(" — ").append(binCount).append(" bin(s): ").append(bins).append("\n");
+                sb.append(" — ").append(totalQty).append(" unit(s) across ")
+                  .append(binCount).append(" bin(s): ").append(bins).append("\n");
             }
             return products > 0
                 ? "Current warehouse inventory — " + products + " product(s):\n" + sb
@@ -74,25 +86,41 @@ public class WarehouseSkills {
         }
     }
 
-    // Lists every bin currently holding the product in slot 1 or 2.
+    // Lists every bin currently holding the product in slot 1 or 2, with unit totals and weight %.
     public static String findProductLocation(String productId) {
-        String sql = "SELECT bin_id, status, blocked_status FROM Bins " +
-                     "WHERE Product1 = ? OR Product2 = ?";
+        String sql =
+            "SELECT b.bin_id, b.blocked_status, b.max_weight_capacity, " +
+            "  CASE WHEN b.Product1 = ? THEN b.Product1_qty ELSE 0 END + " +
+            "  CASE WHEN b.Product2 = ? THEN b.Product2_qty ELSE 0 END AS bin_qty, " +
+            "  COALESCE(p1.weight_kg * b.Product1_qty, 0) + COALESCE(p2.weight_kg * b.Product2_qty, 0) AS used_weight " +
+            "FROM Bins b " +
+            "LEFT JOIN Products p1 ON b.Product1 = p1.product_id " +
+            "LEFT JOIN Products p2 ON b.Product2 = p2.product_id " +
+            "WHERE b.Product1 = ? OR b.Product2 = ?";
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
             pstmt.setString(1, productId);
             pstmt.setString(2, productId);
+            pstmt.setString(3, productId);
+            pstmt.setString(4, productId);
             ResultSet rs = pstmt.executeQuery();
             StringBuilder sb = new StringBuilder();
-            int count = 0;
+            int binCount = 0;
+            int totalQty = 0;
             while (rs.next()) {
-                count++;
+                binCount++;
+                int binQty = rs.getInt("bin_qty");
+                totalQty += binQty;
+                double maxW = rs.getDouble("max_weight_capacity");
+                int weightPct = maxW > 0
+                    ? (int) Math.round(rs.getDouble("used_weight") / maxW * 100) : 0;
                 sb.append("- ").append(rs.getString("bin_id"))
-                  .append(" (status: ").append(rs.getString("status"))
-                  .append(", ").append(rs.getString("blocked_status")).append(")\n");
+                  .append(" (").append(binQty).append(" units, capacity: ")
+                  .append(weightPct).append("%, ")
+                  .append(rs.getString("blocked_status")).append(")\n");
             }
-            return count > 0
-                ? "Product " + productId + " is stored in " + count + " bin(s):\n" + sb
+            return binCount > 0
+                ? "Product " + productId + " — total stock: " + totalQty + " unit(s) across " + binCount + " bin(s):\n" + sb
                 : "Product " + productId + " is not currently stored in any bin.";
         } catch (SQLException e) {
             return "Database error: " + e.getMessage();
@@ -142,16 +170,17 @@ public class WarehouseSkills {
 
         String sql =
             "SELECT b.bin_id, " +
-            "  (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) AS rem_weight, " +
-            "  (b.max_volume_m3       - COALESCE(p1.volume_m3,  0) - COALESCE(p2.volume_m3,  0)) AS rem_volume " +
+            "  (b.max_weight_capacity - COALESCE(p1.weight_kg * b.Product1_qty, 0) - COALESCE(p2.weight_kg * b.Product2_qty, 0)) AS rem_weight, " +
+            "  (b.max_volume_m3       - COALESCE(p1.volume_m3  * b.Product1_qty, 0) - COALESCE(p2.volume_m3  * b.Product2_qty, 0)) AS rem_volume " +
             "FROM Bins b " +
             "LEFT JOIN Products p1 ON b.Product1 = p1.product_id " +
             "LEFT JOIN Products p2 ON b.Product2 = p2.product_id " +
             "WHERE b.status IN ('Empty', 'Half') " +
             "AND b.blocked_status = 'Clear' " +
             "AND b.accessibility_score >= ? " +
-            "AND (b.max_weight_capacity - COALESCE(p1.weight_kg, 0) - COALESCE(p2.weight_kg, 0)) >= ? " +
-            "AND (b.max_volume_m3       - COALESCE(p1.volume_m3,  0) - COALESCE(p2.volume_m3,  0)) >= ? " +
+            "AND (b.max_weight_capacity - COALESCE(p1.weight_kg * b.Product1_qty, 0) - COALESCE(p2.weight_kg * b.Product2_qty, 0)) >= ? " +
+            "AND (b.max_volume_m3       - COALESCE(p1.volume_m3  * b.Product1_qty, 0) - COALESCE(p2.volume_m3  * b.Product2_qty, 0)) >= ? " +
+            "AND (b.status = 'Empty' OR COALESCE(p1.weight_kg * b.Product1_qty, 0) < b.max_weight_capacity * 0.9) " +
             exclusionClause +
             "ORDER BY " +
             "  CASE WHEN b.status = 'Half' THEN 0 ELSE 1 END, " +
@@ -273,7 +302,7 @@ public class WarehouseSkills {
     // Sends an HTML Telegram message to every manager in MANAGER_CHAT_IDS.
     // Returns null on full success, or the first error string encountered.
     private static String notifyAllManagers(String alertMessage) {
-        java.net.http.HttpClient client = java.net.http.HttpClient.newHttpClient();
+        java.net.http.HttpClient client = HTTP_CLIENT;
         for (String chatId : MANAGER_CHAT_IDS) {
             try {
                 JsonObject payload = new JsonObject();
