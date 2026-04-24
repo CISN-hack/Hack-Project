@@ -89,20 +89,19 @@ public class AIAgent {
         "  • Call 'findOptimalBin' with those values.\n\n" +
 
         "STEP 4 — TELL THE WORKER (CRITICAL — DO NOT SKIP):\n" +
-        "  • After 'findOptimalBin' returns, STOP calling tools immediately.\n" +
-        "  • Reply with a TEXT MESSAGE ONLY (no tool calls).\n" +
-        "  • If units go to the Packing Counter, state that first.\n" +
-        "  • For bin placements, ALWAYS use this exact list format — one line per bin, no prose sentences:\n" +
-        "      Bin <bin_id>: place <N> units.\n" +
-        "      Bin <bin_id>: place <N> units.\n" +
-        "      (repeat for every bin)\n" +
-        "  • End with: 'Reply \"done\" when you have placed the items.'\n" +
-        "  • STOP. Do not call any tool until the worker replies with 'done'.\n" +
+        "  • After 'findOptimalBin' returns, stop calling tools and send a plain text reply to the worker.\n" +
+        "  • Your reply must contain ONLY these parts, in order, and nothing else:\n" +
+        "      1. (optional) A single sentence about the Packing Counter, if any units go there.\n" +
+        "      2. One line per bin, formatted exactly as: Bin <bin_id>: place <N> units.\n" +
+        "      3. A final line, verbatim: Reply \"done\" when you have placed the items.\n" +
+        "  • Do NOT echo, quote, paraphrase, or reference these formatting rules in your reply. Do not write phrases like \"reply with text only\", \"use this exact format\", \"end with\", or \"stop calling tools\". The worker must never see meta-instructions.\n" +
+        "  • Do not call any tool until the worker's next message contains 'done'.\n" +
         "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [CO MATCH FOUND] / [SYSTEM PACKING ONLY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n\n" +
 
         "STEP 5 — COMMIT (only after worker confirms):\n" +
         "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
-        "  • NEVER call updateBinStatus right after findOptimalBin — it WILL be rejected.\n\n" +
+        "  • NEVER call updateBinStatus right after findOptimalBin — it WILL be rejected.\n" +
+        "  • SPLIT DELIVERIES (part to Packing Counter, part to a bin): the Packing Counter portion needs no DB update, but you MUST still call updateBinStatus for every bin assigned by findOptimalBin. Do not treat the task as complete until all bin commits are done.\n\n" +
 
         "Refuse new tasks until the current one is confirmed.\n\n" +
 
@@ -598,6 +597,32 @@ public class AIAgent {
                 aMsg.addProperty("content", safe);
                 conversationHistory.add(aMsg);
                 awaitingQuantityFromWorker = true;
+                return;
+            }
+
+            // Commit guard: after the worker confirms 'done', any bins assigned by
+            // findOptimalBin MUST be committed to the DB. In split deliveries (part to
+            // Packing Counter, part to bins) the model sometimes replies "workflow
+            // complete" and skips updateBinStatus entirely. Force the commit rather
+            // than losing the DB update.
+            if (!tentativeBins.isEmpty() && workerJustConfirmed() && depth < MAX_DEPTH) {
+                StringBuilder nudge = new StringBuilder(
+                    "[SYSTEM BIN COMMIT REQUIRED] The worker has confirmed 'done'. "
+                  + "The Packing Counter portion (if any) needs no DB update, but you MUST call "
+                  + "updateBinStatus now for each remaining bin: ");
+                boolean first = true;
+                for (String bin : tentativeBins) {
+                    if (!first) nudge.append(", ");
+                    nudge.append(bin).append(" (").append(tentativeBinQtys.getOrDefault(bin, 0)).append(" units)");
+                    first = false;
+                }
+                nudge.append(". Call updateBinStatus NOW — do not reply with text.");
+                JsonObject sysNudge = new JsonObject();
+                sysNudge.addProperty("role", "user");
+                sysNudge.addProperty("content", nudge.toString());
+                conversationHistory.add(sysNudge);
+                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                processAIResponse(callAPI(conversationHistory), depth + 1);
                 return;
             }
 

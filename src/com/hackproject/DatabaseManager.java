@@ -17,22 +17,6 @@ public class DatabaseManager {
             
             while (rs.next()) {
                 Map<String, Object> row = new HashMap<>();
-                String binId = rs.getString("bin_id");
-
-                String[] parts = binId.split("-");
-                if (parts.length != 4) continue;
-
-                String occupancy = rs.getString("status");        // Empty | Half | Full
-                String blocked = rs.getString("blocked_status");  // Blocked | Clear
-
-                int capacity;
-                switch (occupancy == null ? "" : occupancy) {
-                    case "Full": capacity = 100; break;
-                    case "Half": capacity = 50;  break;
-                    default:     capacity = 0;   break;
-                }
-
-                Map<String, Object> row = new HashMap<>();
                 row.put("aisle", rs.getString("aisle"));
                 row.put("shelf", rs.getString("shelf"));
                 row.put("level", rs.getString("level"));
