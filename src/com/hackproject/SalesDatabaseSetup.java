@@ -33,6 +33,7 @@ public class SalesDatabaseSetup {
                     + ");";
             
             stmt.execute(sql);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_sales_product_id ON Sales(product_id);");
             System.out.println("Success: Sales table created.");
             
         } catch (SQLException e) {

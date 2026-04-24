@@ -18,15 +18,16 @@ public class BinDatabaseSetup {
 
         String createSql = "CREATE TABLE Bins (" +
                            "bin_id TEXT PRIMARY KEY, " +
-                           // Core occupancy status — 3 states only
                            "status TEXT CHECK(status IN ('Empty', 'Half', 'Full')), " +
-                           // Separate blocked flag — independent of occupancy
                            "blocked_status TEXT CHECK(blocked_status IN ('Blocked', 'Clear')) DEFAULT 'Clear', " +
                            "max_weight_capacity REAL, " +
                            "max_volume_m3 REAL, " +
                            "accessibility_score INTEGER, " +
                            "Product1 TEXT, " +
-                           "Product2 TEXT" +
+                           "Product1_qty INTEGER DEFAULT 0, " +
+                           "Product2 TEXT, " +
+                           "Product2_qty INTEGER DEFAULT 0, " +
+                           "capacity_pct INTEGER DEFAULT 0" +
                            ");";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
@@ -34,6 +35,9 @@ public class BinDatabaseSetup {
 
             stmt.execute(dropSql);
             stmt.execute(createSql);
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_bins_product1 ON Bins(Product1);");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_bins_product2 ON Bins(Product2);");
+            stmt.execute("CREATE INDEX IF NOT EXISTS idx_bins_status   ON Bins(status, blocked_status);");
             System.out.println("Table created: status ('Empty','Half','Full') + blocked_status ('Blocked','Clear').");
 
         } catch (SQLException e) {
@@ -42,8 +46,8 @@ public class BinDatabaseSetup {
     }
 
     public static void insertMockData() {
-        String sql = "INSERT INTO Bins (bin_id, status, blocked_status, max_weight_capacity, max_volume_m3, accessibility_score, Product1, Product2) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO Bins (bin_id, status, blocked_status, max_weight_capacity, max_volume_m3, accessibility_score, Product1, Product1_qty, Product2, Product2_qty, capacity_pct) " +
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(sql)) {
@@ -76,7 +80,10 @@ public class BinDatabaseSetup {
                             pstmt.setDouble(5, maxVolume);
                             pstmt.setInt(6, accessibilityScore);
                             pstmt.setString(7, null);
-                            pstmt.setString(8, null);
+                            pstmt.setInt(8, 0);
+                            pstmt.setString(9, null);
+                            pstmt.setInt(10, 0);
+                            pstmt.setInt(11, 0);
 
                             pstmt.executeUpdate();
                             totalBinsCreated++;

@@ -8,10 +8,10 @@ import java.sql.SQLException;
 public class InventoryTools {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
-    public static String updateBinStatus(String binId, String aiSuggestedStatus, String productId) {
+    public static String updateBinStatus(String binId, String aiSuggestedStatus, String productId, int quantity) {
         String checkSql = "SELECT Product1, Product2 FROM Bins WHERE bin_id = ?";
-        String fillSlot1Sql = "UPDATE Bins SET status = ?, Product1 = ? WHERE bin_id = ?";
-        String fillSlot2Sql = "UPDATE Bins SET status = ?, Product2 = ? WHERE bin_id = ?";
+        String fillSlot1Sql = "UPDATE Bins SET status = ?, Product1 = ?, Product1_qty = ? WHERE bin_id = ?";
+        String fillSlot2Sql = "UPDATE Bins SET status = ?, Product2 = ?, Product2_qty = ? WHERE bin_id = ?";
 
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
@@ -33,6 +33,26 @@ public class InventoryTools {
                     finalSql = fillSlot1Sql;
                     calculatedStatus = "Half";
                 } else if (p2Empty) {
+                    // 90% weight threshold: if Product1 already occupies ≥90% of bin
+                    // weight capacity, the bin is considered full — no Product2 allowed.
+                    String threshSql =
+                        "SELECT b.max_weight_capacity, " +
+                        "  COALESCE(p.weight_kg * b.Product1_qty, 0) AS used_weight " +
+                        "FROM Bins b LEFT JOIN Products p ON b.Product1 = p.product_id " +
+                        "WHERE b.bin_id = ?";
+                    try (PreparedStatement threshStmt = conn.prepareStatement(threshSql)) {
+                        threshStmt.setString(1, binId);
+                        ResultSet threshRs = threshStmt.executeQuery();
+                        if (threshRs.next()) {
+                            double maxW  = threshRs.getDouble("max_weight_capacity");
+                            double usedW = threshRs.getDouble("used_weight");
+                            if (maxW > 0 && usedW >= maxW * 0.9) {
+                                return "SYSTEM ERROR: Bin " + binId + " is at "
+                                    + (int) Math.round(usedW / maxW * 100)
+                                    + "% weight capacity — Product2 slot is not available.";
+                            }
+                        }
+                    }
                     finalSql = fillSlot2Sql;
                     calculatedStatus = "Full";
                 } else {
@@ -42,18 +62,39 @@ public class InventoryTools {
                 try (PreparedStatement updateStmt = conn.prepareStatement(finalSql)) {
                     updateStmt.setString(1, calculatedStatus);
                     updateStmt.setString(2, productId);
-                    updateStmt.setString(3, binId);
+                    updateStmt.setInt(3, quantity);
+                    updateStmt.setString(4, binId);
 
                     int rows = updateStmt.executeUpdate();
-                    return (rows > 0)
-                        ? "Success! Placed " + productId + " into " + binId + ". Status automatically set to " + calculatedStatus
-                        : "Update failed.";
+                    if (rows <= 0) return "Update failed.";
+                    return "Success! Placed " + quantity + " unit(s) of " + productId
+                        + " into " + binId + ". Status automatically set to " + calculatedStatus;
                 }
             }
             return "Bin not found in database.";
 
         } catch (SQLException e) {
             return "Database update error: " + e.getMessage();
+        }
+    }
+
+    // Fix 8: update capacity_pct for one or more bins in a single SQL statement.
+    // Called after updateBinStatus (single bin) or after the Java commit loop (all bins at once).
+    public static void refreshCapacityPct(java.util.List<String> binIds) {
+        if (binIds == null || binIds.isEmpty()) return;
+        StringBuilder sql = new StringBuilder(
+            "UPDATE Bins SET capacity_pct = CAST(ROUND(" +
+            "  (COALESCE((SELECT weight_kg FROM Products WHERE product_id = Product1), 0) * Product1_qty + " +
+            "   COALESCE((SELECT weight_kg FROM Products WHERE product_id = Product2), 0) * Product2_qty) " +
+            "  / max_weight_capacity * 100) AS INTEGER) WHERE bin_id IN (");
+        for (int i = 0; i < binIds.size(); i++) sql.append(i == 0 ? "?" : ",?");
+        sql.append(")");
+        try (Connection conn = DriverManager.getConnection(DB_URL);
+             PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
+            for (int i = 0; i < binIds.size(); i++) pstmt.setString(i + 1, binIds.get(i));
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            System.out.println("[DB ERROR] refreshCapacityPct: " + e.getMessage());
         }
     }
 
