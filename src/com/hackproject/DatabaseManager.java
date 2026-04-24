@@ -6,37 +6,39 @@ import java.util.*;
 public class DatabaseManager {
     private static final String DB_URL = "jdbc:sqlite:warehouse_demo.db";
 
-    // Query for Capacity/Grid data. bin_id format: A{aisle}-S{shelf}-L{level}-B{bin}
+    // Query for Capacity/Grid data
     public static List<Map<String, Object>> getInventoryData() {
         List<Map<String, Object>> data = new ArrayList<>();
-        String sql = "SELECT aisle, shelf, level, bin, capacity, status FROM inventory";
+        // FIX: Added Product1 and Product2 to the SELECT statement
+        String sql = "SELECT bin_id, status, blocked_status, Product1, Product2 FROM Bins";
         
         try (Connection conn = DriverManager.getConnection(DB_URL);
-             Statement stmt = conn.createStatement();
-             ResultSet rs = stmt.executeQuery(sql)) {
+            Statement stmt = conn.createStatement();
+            ResultSet rs = stmt.executeQuery(sql)) {
             
             while (rs.next()) {
+                Map<String, Object> row = new HashMap<>();
                 String binId = rs.getString("bin_id");
+
                 String[] parts = binId.split("-");
-                if (parts.length != 4) continue;
-
-                String occupancy = rs.getString("status");        // Empty | Half | Full
-                String blocked = rs.getString("blocked_status");  // Blocked | Clear
-
-                int capacity;
-                switch (occupancy == null ? "" : occupancy) {
-                    case "Full": capacity = 100; break;
-                    case "Half": capacity = 50;  break;
-                    default:     capacity = 0;   break;
+                if (parts.length == 4) {
+                    row.put("aisle", parts[0].trim());
+                    row.put("shelf", parts[1].trim());
+                    row.put("level", parts[2].trim());
+                    row.put("bin", parts[3].trim());
                 }
 
-                Map<String, Object> row = new HashMap<>();
-                row.put("aisle", rs.getString("aisle"));
-                row.put("shelf", rs.getString("shelf"));
-                row.put("level", rs.getString("level"));
-                row.put("bin", rs.getString("bin"));
-                row.put("capacity", rs.getInt("capacity"));
-                row.put("status", rs.getString("status")); // e.g., 'active' or 'OFF'
+                // These will now work because they are in the SELECT above
+                row.put("product1", rs.getString("Product1")); 
+                row.put("product2", rs.getString("Product2"));
+                row.put("blocked_status", rs.getString("blocked_status")); 
+                
+                String currentStatus = rs.getString("status");
+                int capacity = 0;
+                if ("Half".equalsIgnoreCase(currentStatus)) capacity = 50;
+                else if ("Full".equalsIgnoreCase(currentStatus)) capacity = 100;
+                
+                row.put("capacity", capacity);
                 data.add(row);
             }
         } catch (SQLException e) { 
@@ -49,8 +51,10 @@ public class DatabaseManager {
     public static List<Map<String, Object>> getSalesVelocity() {
     List<Map<String, Object>> data = new ArrayList<>();
     
-    // Using UPPER and TRIM to ignore case and hidden spaces
-    String sql = "SELECT p.product_name AS name, SUM(s.quantity) AS velocity " +
+    // This query groups sales by week and creates a "10,20,30" history string
+    String sql = "SELECT p.product_name AS name, " +
+                 "SUM(s.quantity) AS velocity, " +
+                 "GROUP_CONCAT(s.quantity) AS history " + 
                  "FROM Sales s " +
                  "JOIN Products p ON TRIM(UPPER(s.product_id)) = TRIM(UPPER(p.product_id)) " +
                  "GROUP BY p.product_name " +
@@ -62,15 +66,10 @@ public class DatabaseManager {
 
         while (rs.next()) {
             Map<String, Object> row = new HashMap<>();
-            String name = rs.getString("name");
-            int velocity = rs.getInt("velocity"); // Ensure this is getInt!
-            
-            // This will print to your JAVA terminal so we can see if data exists
-            System.out.println("✅ BACKEND FOUND: " + name + " | Qty: " + velocity);
-            
-            row.put("name", name);
-            row.put("velocity", velocity);
-            row.put("growth", "+12%");
+            row.put("name", rs.getString("name"));
+            row.put("velocity", rs.getInt("velocity"));
+            // Send the history string to the frontend as 'sale_data'
+            row.put("sale_data", rs.getString("history")); 
             data.add(row);
         }
     } catch (SQLException e) {
