@@ -30,15 +30,24 @@ public class WarehouseController {
 
         // 4. POST: AI Chat Endpoint (ONLY ONE DEFINITION)
         app.post("/api/chat", ctx -> {
-            Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
-            String userMessage = request.get("message");
+            try {
+                Map<String, String> request = gson.fromJson(ctx.body(), new TypeToken<Map<String, String>>(){}.getType());
+                String userMessage = request.get("message");
 
-            System.out.println("Processing message: " + userMessage);
+                if (userMessage == null) {
+                    throw new Exception("Message content was null!");
+                }
 
-            // Get response from your AIAgent class
-            String aiReply = AIAgent.getAIResponseForWeb(userMessage);
+                System.out.println("Processing message: " + userMessage);
 
-            ctx.json(Map.of("reply", aiReply));
+                // Get response from your AIAgent class
+                String aiReply = AIAgent.getAIResponseForWeb(userMessage);
+
+                ctx.json(Map.of("reply", aiReply));
+            } catch (Exception e) {
+                e.printStackTrace();
+                ctx.status(500).result("Server Error: " + e.getMessage());
+            }
         });
 
         System.out.println("🚀 Zai Server is live on http://localhost:8080");
