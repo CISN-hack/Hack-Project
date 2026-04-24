@@ -9,20 +9,33 @@ public class DatabaseManager {
     // Query for Capacity/Grid data
     public static List<Map<String, Object>> getInventoryData() {
         List<Map<String, Object>> data = new ArrayList<>();
-        String sql = "SELECT aisle, shelf, level, bin, capacity, status FROM inventory";
+        String sql = "SELECT bin_id, status, blocked_status, capacity_pct, Product1, Product2 FROM Bins ORDER BY bin_id";
         
         try (Connection conn = DriverManager.getConnection(DB_URL);
              Statement stmt = conn.createStatement();
              ResultSet rs = stmt.executeQuery(sql)) {
             
             while (rs.next()) {
+                String binId = rs.getString("bin_id"); // e.g., "A1-S1-L1-B1"
+                
+                // Parse bin_id into components
+                String[] parts = binId.split("-");
+                String aisle = parts.length > 0 ? parts[0] : ""; // A1
+                String shelf = parts.length > 1 ? parts[1] : ""; // S1
+                String level = parts.length > 2 ? parts[2] : ""; // L1
+                String bin = parts.length > 3 ? parts[3] : "";   // B1
+                
                 Map<String, Object> row = new HashMap<>();
-                row.put("aisle", rs.getString("aisle"));
-                row.put("shelf", rs.getString("shelf"));
-                row.put("level", rs.getString("level"));
-                row.put("bin", rs.getString("bin"));
-                row.put("capacity", rs.getInt("capacity"));
-                row.put("status", rs.getString("status")); // e.g., 'active' or 'OFF'
+                row.put("aisle", aisle);
+                row.put("shelf", shelf);
+                row.put("level", level);
+                row.put("bin", bin);
+                row.put("bin_id", binId);
+                row.put("capacity", rs.getInt("capacity_pct"));
+                row.put("status", rs.getString("status"));
+                row.put("blocked_status", rs.getString("blocked_status"));
+                row.put("product1", rs.getString("Product1"));
+                row.put("product2", rs.getString("Product2"));
                 data.add(row);
             }
         } catch (SQLException e) {

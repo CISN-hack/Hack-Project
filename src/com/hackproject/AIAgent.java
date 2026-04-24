@@ -82,21 +82,33 @@ public class AIAgent {
         "STEP 2 — CHECK THE CUSTOMER ORDER:\n" +
         "  • Call 'readLocalCustomerOrder'.\n" +
         "  • A [CO MATCH FOUND] or [NO CO MATCH] message will be injected automatically after the result.\n" +
-        "  • Read it carefully and follow its routing instruction exactly.\n\n" +
+        "  • Read it carefully and follow its routing instruction exactly.\n" +
+        "  • AFTER reading the CO message, the system will inject [SYSTEM SPLIT DELIVERY] or [SYSTEM PACKING ONLY].\n" +
+        "  • READ THIS INJECTED SYSTEM MESSAGE CAREFULLY — it contains the exact Packing Counter quantity and customer name.\n" +
+        "  • You MUST extract and memorize: the Packing Counter quantity, the customer name, and the priority from [SYSTEM SPLIT DELIVERY].\n" +
+        "  • You MUST include this information in your STEP 4 response to the worker.\n\n" +
 
         "STEP 3 — BINNING (only if needed):\n" +
         "  • Use the product analysis from Step 1 to calculate weight/volume for the units being binned.\n" +
-        "  • Call 'findOptimalBin' with those values.\n\n" +
+        "  • Call 'findOptimalBin' with those values.\n" +
+        "  • 'findOptimalBin' will return a response like: \"Bin A1-S1-L1-B1: place 50 units.\"\n" +
+        "  • The bin ID format is ALWAYS: A#-S#-L#-B# (Aisle-Shelf-Level-Bin).\n" +
+        "  • Examples of valid bin IDs: A1-S1-L1-B1, A2-S2-L3-B2, A3-S1-L2-B3.\n" +
+        "  • NEVER modify or reformat the bin ID. Use EXACTLY the format returned by the tool.\n\n" +
 
         "STEP 4 — TELL THE WORKER (CRITICAL — DO NOT SKIP):\n" +
         "  • After 'findOptimalBin' returns, stop calling tools and send a plain text reply to the worker.\n" +
+        "  • IF a [SYSTEM SPLIT DELIVERY] message was received: EXTRACT the customer name, priority, and Packing Counter quantity from it. INCLUDE this in your response.\n" +
+        "  • IF a [SYSTEM PACKING ONLY] message was received: EXTRACT the customer name and quantity. Tell the worker to send ALL to Packing Counter — do NOT bin anything.\n" +
         "  • Your reply must contain ONLY these parts, in order, and nothing else:\n" +
-        "      1. (optional) A single sentence about the Packing Counter, if any units go there.\n" +
-        "      2. One line per bin, formatted exactly as: Bin <bin_id>: place <N> units.\n" +
+        "      1. Packing Counter sentence (REQUIRED if [SYSTEM SPLIT DELIVERY] or [SYSTEM PACKING ONLY] was received): One sentence with quantity, customer, and priority from the injected system message. Example: \"Send 40 units to the Packing Counter for KL Rapid Construction (High priority).\"\n" +
+        "      2. Bin assignments (REQUIRED only if binning occurs after Packing Counter): One line per bin, formatted exactly as: Bin <bin_id>: place <N> units. (where <bin_id> is in format A#-S#-L#-B#, e.g., A1-S1-L1-B1). Example: \"Bin A1-S1-L1-B1: place 20 units.\"\n" +
         "      3. A final line, verbatim: Reply \"done\" when you have placed the items.\n" +
         "  • Do NOT echo, quote, paraphrase, or reference these formatting rules in your reply. Do not write phrases like \"reply with text only\", \"use this exact format\", \"end with\", or \"stop calling tools\". The worker must never see meta-instructions.\n" +
         "  • Do not call any tool until the worker's next message contains 'done'.\n" +
-        "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [CO MATCH FOUND] / [SYSTEM PACKING ONLY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n\n" +
+        "  • HARD RULE: you may ONLY mention a specific bin ID, a unit split, or the Packing Counter if 'findOptimalBin' (or an injected [CO MATCH FOUND] / [SYSTEM PACKING ONLY] / [SYSTEM SPLIT DELIVERY] message) has already produced that routing in this conversation. NEVER invent a bin ID or unit count. If quantity is missing, go back to STEP 1b and ask for it.\n" +
+        "  • CRITICAL: BIN IDs MUST ALWAYS BE IN FORMAT A#-S#-L#-B# (examples: A1-S1-L1-B1, A2-S2-L2-B3). NEVER use formats like Bin1A, Bin2B, Bin3C, or any other variation. These formats are incorrect and must never be used.\n" +
+        "  • CRITICAL: When [SYSTEM SPLIT DELIVERY] is received, you MUST mention BOTH the Packing Counter AND the bins. Do NOT omit the Packing Counter instruction. The worker needs to know to send part of the delivery to Packing Counter first.\n\n" +
 
         "STEP 5 — COMMIT (only after worker confirms):\n" +
         "  • Only if the worker's latest message is 'done', 'placed', 'confirmed', or similar, call 'updateBinStatus'.\n" +
@@ -600,6 +612,42 @@ public class AIAgent {
                 return;
             }
 
+            // STEP 4 reply guard: findOptimalBin populates tentativeBins/tentativeBinQtys
+            // in Java. The LLM is supposed to echo each bin assignment in its plain-text
+            // reply, but sometimes it emits only the final "Reply 'done'..." line and drops
+            // the bin lines (and Packing Counter line) entirely — which leaves the worker
+            // with no idea where to put the stock. Detect that, then rebuild the STEP 4
+            // reply deterministically from Java state instead of trusting the LLM.
+            if (!tentativeBins.isEmpty() && !workerJustConfirmed()) {
+                boolean missingBin = false;
+                for (String bin : tentativeBins) {
+                    if (!content.contains(bin)) { missingBin = true; break; }
+                }
+                if (missingBin) {
+                    StringBuilder fixed = new StringBuilder();
+                    int binTotal = 0;
+                    for (int q : tentativeBinQtys.values()) binTotal += q;
+                    int packQty = lastArrivingQuantity > 0 ? lastArrivingQuantity - binTotal : 0;
+                    if (packQty > 0) {
+                        fixed.append("Take ").append(packQty).append(" units to the Packing Counter");
+                        if (!lastPoCustomer.isEmpty()) fixed.append(" for ").append(lastPoCustomer);
+                        fixed.append(".\n");
+                    }
+                    for (String bin : tentativeBins) {
+                        int q = tentativeBinQtys.getOrDefault(bin, 0);
+                        fixed.append("Bin ").append(bin).append(": place ").append(q).append(" units.\n");
+                    }
+                    fixed.append("Reply \"done\" when you have placed the items.");
+                    String fixedContent = fixed.toString();
+                    System.out.println("\nZai: " + fixedContent);
+                    JsonObject aMsg = new JsonObject();
+                    aMsg.addProperty("role", "assistant");
+                    aMsg.addProperty("content", fixedContent);
+                    conversationHistory.add(aMsg);
+                    return;
+                }
+            }
+
             // Commit guard: after the worker confirms 'done', any bins assigned by
             // findOptimalBin MUST be committed to the DB. In split deliveries (part to
             // Packing Counter, part to bins) the model sometimes replies "workflow
@@ -617,6 +665,42 @@ public class AIAgent {
                     first = false;
                 }
                 nudge.append(". Call updateBinStatus NOW — do not reply with text.");
+                JsonObject sysNudge = new JsonObject();
+                sysNudge.addProperty("role", "user");
+                sysNudge.addProperty("content", nudge.toString());
+                conversationHistory.add(sysNudge);
+                try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+                processAIResponse(callAPI(conversationHistory), depth + 1);
+                return;
+            }
+
+            // Skipped-workflow guard: the LLM sometimes hallucinates a STEP 4 reply
+            // ("Reply 'done' when you have placed the items.") without ever calling
+            // readLocalCustomerOrder or findOptimalBin — so the worker sees the commit
+            // prompt with no bin or Packing Counter info. Detect that and force the
+            // workflow back on track with an imperative nudge, one retry only.
+            boolean bareDoneLine =
+                content != null
+                && content.toLowerCase().contains("reply \"done\"")
+                && !BIN_ID_PATTERN.matcher(content).find()
+                && !content.toLowerCase().contains("packing counter");
+            if (bareDoneLine && tentativeBins.isEmpty() && !allToPackingCounter
+                    && !lastArrivingProductId.isEmpty() && lastArrivingQuantity > 0
+                    && depth < MAX_DEPTH - 1) {
+                StringBuilder nudge = new StringBuilder(
+                    "[SYSTEM WORKFLOW INCOMPLETE] You replied with the 'done' prompt but never "
+                  + "called the tools. You MUST run the workflow now — no text replies until "
+                  + "findOptimalBin has returned. ");
+                if (!poCheckDone) {
+                    nudge.append("Call readLocalCustomerOrder first for ")
+                         .append(lastArrivingProductId).append(" (").append(lastArrivingQuantity)
+                         .append(" units arriving), then follow the injected routing instruction. ");
+                } else {
+                    nudge.append("Call findOptimalBin now for ")
+                         .append(lastArrivingProductId).append(" — ")
+                         .append(lastArrivingQuantity).append(" units arriving. ");
+                }
+                nudge.append("Do NOT reply with text this turn.");
                 JsonObject sysNudge = new JsonObject();
                 sysNudge.addProperty("role", "user");
                 sysNudge.addProperty("content", nudge.toString());

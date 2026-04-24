@@ -105,11 +105,10 @@ public class InventoryTools {
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(blockSql)) {
 
-            String searchPrefix = location.replaceAll("[^0-9a-zA-Z]", "").toUpperCase();
-            if (searchPrefix.contains("AISLE")) {
-                searchPrefix = searchPrefix.replace("AISLE", "A");
-            }
-            pstmt.setString(1, searchPrefix + "%");
+            // Extract aisle number from location (e.g., "Aisle A1" → "A1-%")
+            String searchPrefix = extractAislePattern(location);
+            System.out.println("[DB DEBUG] Blocking with pattern: " + searchPrefix);
+            pstmt.setString(1, searchPrefix);
             return pstmt.executeUpdate(); // returns number of bins blocked
 
         } catch (Exception e) {
@@ -124,16 +123,32 @@ public class InventoryTools {
         try (Connection conn = DriverManager.getConnection(DB_URL);
              PreparedStatement pstmt = conn.prepareStatement(clearSql)) {
 
-            String searchPrefix = location.replaceAll("[^0-9a-zA-Z]", "").toUpperCase();
-            if (searchPrefix.contains("AISLE")) {
-                searchPrefix = searchPrefix.replace("AISLE", "A");
-            }
-            pstmt.setString(1, searchPrefix + "%");
+            // Extract aisle number from location (e.g., "Aisle A1" → "A1-%")
+            String searchPrefix = extractAislePattern(location);
+            System.out.println("[DB DEBUG] Clearing with pattern: " + searchPrefix);
+            pstmt.setString(1, searchPrefix);
             return pstmt.executeUpdate(); // returns number of bins unblocked
 
         } catch (Exception e) {
             System.out.println("[DB ERROR] Could not clear aisle: " + e.getMessage());
             return 0;
         }
+    }
+
+    // Helper: Extract aisle pattern from location string (e.g., "Aisle A1" → "A1-%")
+    private static String extractAislePattern(String location) {
+        if (location == null) return "%";
+        
+        String upper = location.toUpperCase();
+        // Try to find pattern like "A1", "A2", etc.
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("(A[0-3])");
+        java.util.regex.Matcher matcher = pattern.matcher(upper);
+        
+        if (matcher.find()) {
+            return matcher.group(1) + "-%";  // Returns "A1-%", "A2-%", etc.
+        }
+        
+        // Fallback: just return the whole location cleaned up
+        return location.replaceAll("[^A0-9]", "").toUpperCase() + "%";
     }
 }
