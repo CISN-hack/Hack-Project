@@ -1,85 +1,171 @@
-# Warehouse Restock Manager
-- How to run the backend for now ? (Not working without Zai API)
-* 1 Download extension : Java pack , SQLite , SQLite viewer
-* 2 Open terminal and type : exit then hit enter
-* 3 type : javac -cp "lib/*" src/*.java
-* 4 type : java -cp "lib/*;src" AIAgent
-* 5 Start your conversation with AI
-- Warehouse : E-commerce warehouse  (Supplier goods delivered -> workers handle -> based on customer's Purchase Order(PO) )
+# Zai — Intelligent Warehouse Restock Manager
 
-## Main Idea
-- **Step 1 (Unstructured Input)**: A warehouse worker types in a chat: "A new pallet of 500 iPhones,50 heavy mini-fridges and 7 light bars just arrived. Where do I put them? Here is a picture of Aisle 4."
+**Domain:** AI Systems & Agentic Workflow Automation
+**Target users:** Small-to-medium electrical trading warehouses (e.g. *Chunley*) — businesses that operate as a warehouse but still serve walk-in local customers for daily needs.
 
-- **Step 2 (API Interactions & Multi-Step Reasoning)**: The GLM doesn't just guess. It actively triggers tools:  
-  * **Tool 1**: Queries the **Purchase Database API** -> *"7 light bars occurs in recent Purchase Order"*
-  * **Tool 2**: Queries the **Sales Database API** -> *"iPhones sell fast, fridges sell slow."*
-  * **Tool 3**: Queries the **Product API** -> *"iPhones are 100g, fridges are 40kg."* (LLM need to do the calculation by himself)
-  * **Tool 4**: Queries the **Warehouse Database API** -> *"Aisle 4 can only hold 200kg, and is currently empty."*
-  * **Tool 5**: Queries the **Product Database API** -> *"grey kdk 3 blade fan is likely to be KU50Y"*
+---
 
-- **Step 3 (Edge Case Handling)**: ...Fridge is too heavy for the upper level...//...Closure of Aisle 4 due to failure of forklift
-    
-- **Step 4 (Dynamic Task Orchestration)**: Instead of failing, the GLM dynamically alters the workflow. It replies to the worker:"Fridges to Zone C, Aisle 9, Shelves 1-3. iPhones to Zone F, Aisle 6, Shelves 3, **light bars put near packing area**.I have updated the database to reserve this space."  
+## The Problem
 
-## How stock is locate (Digital Twin Table)
-- **Note**: Warehouse contains multiple Zones (e.g., Cold Storage, Heavy Goods, Fast-Moving).  
-**Zones** contain multiple **Aisles**.  
-Aisles contain multiple **Shelves** (or Racks).  
-Shelves contain individual **Bins** (or Slots).
-  
-- **binAdd** :  
-bin_id: (e.g., **"ZH-A4-S2-L2-B12"** for Zone Heavy, Aisle 4, Shelf 2, Bin 12)  
-status: (e.g., "Empty", "Partially Full", "Full")  
-max_weight_capacity: 100kg  
-current_weight: 40kg  
-max_volume: 2 cubic meters  
-current_items: [List of product IDs currently stored here]
+In SME warehouses, the moment a delivery truck arrives, a worker has to answer three questions at once:
 
-## Test Case Scenario
-- **The Overweight Pallet**: The user asks to put 500kg of goods in an aisle, but the database says the shelf can only hold 200kg, forcing the AI to find a new location.
+1. **Is any of this stock already promised to a customer order today?** — if yes, it should not be binned at all.
+2. **Where is the best bin to put the rest?** — depends on product weight, volume, sales velocity, customer base, blocked areas, and remaining bin capacity.
+3. **What if something goes wrong?** — a forklift fails, a spill happens, an aisle is blocked.
 
-- **The "Missing Item" Ambiguity**: The user asks where to put "the new shipment," but forgets to say what the shipment is, forcing the AI to ask a clarifying follow-up question.
+Today this is solved by walking around, asking the manager, guessing, or memorising. The result: **wasted time, wasted space, miscommunication, and unsafe routing.** A worker who is new to the floor cannot make these decisions at all.
 
-- **The "Blocked Aisle" Exception**: The user says, "Put the new stock in Aisle 4," but the AI has been informed that Aisle 4 is currently blocked due to a forklift breakdown, forcing it to reroute the worker.
+Zai is built so that any worker — new or experienced — can make the *optimal* placement decision in seconds, just by talking to the system.
 
--**The "Viral Product" Opportunity**: The AI notices that a specific product is suddenly selling much faster than usual (e.g., due to a viral TikTok video) and proactively suggests moving that product to a more accessible location for faster picking.
+---
 
--**The "New Worker" Scenario**: A temporary worker who is unfamiliar with the warehouse layout asks for guidance on where to put a new shipment, and the AI provides a simple, conversational interface to direct them.
-## Usefull Notes
-### The Core Difference: "System of Record" vs. "System of Intelligence"
-Standard warehouses use a Warehouse Management System (WMS). A WMS is essentially a giant database. It is a System of Record.
+## The Solution
 
-What a WMS does: A worker puts a box on Shelf 4, scans a barcode, and the WMS records: "Box A is on Shelf 4." It is purely reactive. It tracks what happened.
+Zai is a **stateful, tool-using AI agent** that turns unstructured worker chat ("a truck of 60 K15VC arrived") into a structured, multi-step workflow:
 
-Your AI Agent is a System of Intelligence.
+> understand intent → query the right database → cross-check the customer order CSV → run the math for the best bin → instruct the worker → commit the placement → handle exceptions (accidents, blocked aisles) along the way.
 
-What your AI does: It doesn't just record where things are; it strategizes where things should go before the worker even moves the box.
+If the AI is removed, the workflow collapses — the databases, CSV file, and Telegram notifier cannot coordinate themselves.
 
-The Point of Your Project (Your Hackathon USP)
-Standard systems lack dynamic, cross-departmental reasoning. Your AI bridges the gap between sales forecasting and physical warehouse labor.
+---
 
-Here is why your project is valuable:
+## Why It Doesn't Hallucinate
 
-1. Dynamic Slotting (The "Sales Velocity" Angle)
-Traditional WMS systems are often static. If a shelf is assigned to "Electronics," all electronics go there.
-Your AI agent looks at external data. If it sees that a specific brand of headphones is going viral on TikTok and sales are spiking, it intervenes. When the next shipment arrives, the AI tells the worker: "Skip the normal electronics aisle. Put these right next to the packing station (Aisle 1) because we are going to ship 500 of them tomorrow." This saves workers miles of walking and speeds up delivery.
+| Concern | How Zai handles it |
+| --- | --- |
+| **AI model** | `meta/llama-3.3-70b-instruct` (via Nvidia-hosted endpoint) |
+| **Architecture** | AI Agent with OpenAI-style tool calling — the model never invents a bin ID, weight, or stock count; it must call a tool to read the database |
+| **Quality of decisions** | Bin selection is a **mathematical query**, not a generated guess — weight capacity, volume capacity, accessibility score, and sales velocity are evaluated in SQL |
+| **Safety guardrails** | Java-side gates enforce confirmation, quantity checks, and emergency keyword detection *before* any write to the database |
 
-2. Handling Real-Time Exceptions
-A standard tracking system breaks when reality doesn't match the database. If a forklift breaks down and blocks Aisle 2, a standard WMS still tells workers to put things in Aisle 2, causing a traffic jam.
-Your AI Agent can be informed: "Aisle 2 is blocked." It immediately recalculates and orchestrates a new workflow, dynamically rerouting workers to alternative shelves that fit the weight and size constraints of their pallets.
-And also will report the situation to the manager via telegram or any message.
+The LLM is the reasoning layer. The math, the data, and the writes are deterministic.
 
-4. The "Conversational Interface" for Workers
-Enterprise software is notoriously clunky. New warehouse workers spend weeks learning how to use complex RF scanners and legacy database terminals.
-With your agent, the interface is natural language. A temporary worker just types (or speaks): "I have a pallet of dog food, but the assigned shelf is broken." The AI instantly cross-references the database, finds a safe alternative, and replies: "Understood. Reroute to Zone B, Shelf 9. I will update the inventory records for you."
+---
 
-How to Frame This for the Judges
-When your team of four presents this, lean into this narrative:
+## Main Functions
 
-"Warehouses already know where their stock is. That is a solved problem. Our AI Agent solves the unsolved problem: knowing where stock should be right now to maximize packing efficiency, based on real-time sales data and physical constraints."
+Mapped to the hackathon brief — *unstructured input → multi-step reasoning → tool orchestration → structured output*.
 
-Does this help clarify the business value of your agent? We can start designing the mock API calls to simulate this "sales data to shelf location" logic if you are ready.
+### 1. Chat (Unstructured Input → Reasoning)
+Worker types in natural language; Zai identifies whether it is a delivery, a query, an accident, or a clarification, then routes the workflow accordingly.
 
+### 2. Customer Order Cross-Check (Dynamic Cross-Docking)
+Before binning anything, Zai reads the local **customer order CSV** and intercepts stock that is already sold for the day — those units are routed straight to the packing counter instead of wasting a bin.
+
+### 3. Find Optimal Bin *(the core algorithm)*
+Given an arriving product and quantity, Zai picks the bin that satisfies **all** of:
+- (i) quantity to be placed
+- (ii) product weight
+- (iii) product volume
+- (iv) bin's remaining capacity
+- (v) blocked / unblocked status
+- (vi) product's sales velocity
+
+**Decision logic:**
+1. **Set accessibility threshold** — fast-moving items (≥80 sales/month) target the most reachable level (score 5); medium movers target score 3; slow movers target score 1. Premium real-estate is reserved for fast movers.
+2. **Filter** — keep only bins that are `Empty` or `Half`, unblocked, not excluded, and can fit ≥1 unit by both weight and volume.
+3. **Rank** — prefer `Half` bins (consolidate stock) → bins already holding the same product (affinity) → lowest allowed accessibility score (don't waste premium bins).
+4. **Compute capacity** — units placeable in a bin = `min(weight capacity, volume capacity)`.
+5. **Return assignment** — split across multiple bins automatically if one bin cannot absorb the full quantity.
+
+### 4. Accident Report System
+Worker describes an incident in natural language → Zai blocks every bin in the affected aisle, notifies all managers via Telegram, and stops suggesting that aisle until a `clear` signal is received.
+
+### 5. Inventory Lookups & Directory Map
+Read-only queries: *"is there any K15VC in the warehouse?"*, *"what is K15VC?"*, *"where is SCH-E8331?"*. Backed by a live web dashboard showing capacity analytics, sales velocity, and a 54-bin directory map.
+
+### 6. Manager Notifications (Structured Output)
+Telegram alerts for: customer order arrivals, accident reports, and aisle clearances — each with location, product, quantity, and priority.
+
+---
+
+## How to Use (Example Prompts)
+
+Just chat with Zai like a colleague.
+
+**Delivery arrival**
+```
+A truck of 60 K15VC arrived
+```
+Zai will check the customer order file, ask for missing info if needed, route any pre-sold units to the packing counter, and tell you exactly which bin(s) to fill.
+
+**Inventory query**
+```
+What is K15VC?
+Is there any K15VC in our warehouse?
+Where is SCH-E8331?
+```
+
+**Emergency**
+```
+There is forklift failure at A1
+```
+Zai blocks Aisle A1 immediately, alerts the managers, and reroutes any new placements away from A1 until you say:
+```
+A1 is clear
+```
+
+**New worker, no product ID memorised?**
+```
+A pallet of grey 3-blade ceiling fans just arrived
+```
+Zai resolves the description to a product ID via the product database, then continues the normal flow.
+
+---
+
+## How to Run
+
+> All sources live in the `com.hackproject` package. Compiled classes go to `bin/`.
+> Windows uses `;` as the classpath separator; Linux/macOS uses `:`.
+
+**Compile**
+```bash
+javac -d bin -cp "lib/*" src/com/hackproject/*.java
+```
+
+**Run the interactive CLI agent**
+```bash
+java --enable-native-access=ALL-UNNAMED -cp "lib/*;bin" com.hackproject.AIAgent
+```
+
+**Run the HTTP server for the web dashboard** *(port 8080)*
+```bash
+java --enable-native-access=ALL-UNNAMED -cp "lib/*;bin" com.hackproject.WarehouseController
+```
+
+**Rebuild / reseed the SQLite database**
+```bash
+java -cp "lib/*;bin" com.hackproject.WarehouseDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.BinDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.ProductDatabaseSetup
+java -cp "lib/*;bin" com.hackproject.SalesDatabaseSetup
+```
+
+Required at runtime in the working directory: `tools.json`, `CO_April20.csv`, `warehouse_demo.db`.
+
+---
+
+## Architecture at a Glance
+
+```
+Worker chat ──▶ AIAgent (LLM + tool dispatch + state machine)
+                  │
+                  ├── Tools ──▶ SQLite digital twin  (Bins · Products · Sales)
+                  ├── Tools ──▶ Customer Order CSV
+                  └── Tools ──▶ Telegram Bot (manager alerts)
+                                 │
+Web dashboard ◀── WarehouseController (HTTP :8080) ◀── DatabaseManager
+```
+
+- **Bins** — `A{aisle}-S{shelf}-L{level}-B{bin}`, each with weight cap, volume cap, accessibility score, and a two-slot product model.
+- **Products** — ID, name, weight, volume, description.
+- **Sales** — historical sales used to derive sales velocity tiers.
+
+---
+
+## Team
+
+Teoh Jun Hong · Isaac Toh · Leow Zhen Xun · Chong Ming Zhe
 
 
 
