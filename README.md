@@ -1,4 +1,5 @@
 # Zai — Intelligent Warehouse Restock Manager
+Frontend repo : https://github.com/Mingzhe0324/ZAI-Frontend.git
 
 **Domain:** AI Systems & Agentic Workflow Automation
 **Target users:** Small-to-medium electrical trading warehouses (e.g. *Chunley*) — businesses that operate as a warehouse but still serve walk-in local customers for daily needs.
