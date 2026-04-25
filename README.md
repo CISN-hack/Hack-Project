@@ -119,7 +119,12 @@ Zai resolves the description to a product ID via the product database, then cont
 
 ---
 
-## How to Run
+## How to Run  
+
+TRY OUR APP : https://zai-1054928413411.asia-southeast1.run.app/  
+
+<img width="300" height="300" alt="qr" src="https://github.com/user-attachments/assets/f3ad8ae3-8cbc-4bef-af6e-2efbbca29035" />  
+
 
 > All sources live in the `com.hackproject` package. Compiled classes go to `bin/`.
 > Windows uses `;` as the classpath separator; Linux/macOS uses `:`.
